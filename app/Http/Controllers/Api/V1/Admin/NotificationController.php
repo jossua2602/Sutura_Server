@@ -183,7 +183,8 @@ class NotificationController extends Controller
                 'title' => 'Support Ticket #' . $ticket->id,
                 'message' => $ticket->subject,
                 'detail' => ($ticket->store ? $ticket->store->name . ' · ' : '') . ucfirst($ticket->priority ?? 'medium') . ' priority' . ($sender ? " · From {$sender}" : ''),
-                'link' => '/admin/tickets/' . $ticket->id,
+                // The tickets page opens this ticket from ?ticket= (there is no per-ticket page).
+                'link' => '/admin/tickets?ticket=' . $ticket->id,
                 'action_label' => 'View Ticket',
                 'created_at' => $ticket->created_at?->toISOString() ?? now()->toISOString(),
                 'badge' => ucfirst($ticket->status ?? 'open'),

@@ -137,6 +137,7 @@ class JobOrder extends Model
         'rush_fee' => 'decimal:2',
         'discount_amount' => 'decimal:2',
         'first_adjustment_at' => 'datetime',
+        'completed_at' => 'datetime',
         'adjustment_count' => 'integer',
         'progress_photos' => 'array',
     ];

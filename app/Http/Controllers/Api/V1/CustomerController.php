@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Store;
+use App\Support\BranchScope;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -22,10 +23,22 @@ class CustomerController extends Controller
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
+        // A branch (picked by the owner, or the one a manager/staff account is
+        // pinned to) shows only customers with an order or appointment there,
+        // and their totals count that branch only. null = all branches.
+        $branchId = BranchScope::resolve($request, $store);
+        $inBranch = fn ($q) => $branchId ? $q->where('store_branch_id', $branchId) : $q;
+
         // Get customers from pivot, job orders, AND appointments
-        $jobCustomerIds = $store->jobOrders()->pluck('customer_id')->toArray();
-        $pivotCustomerIds = $store->customers()->pluck('users.id')->toArray();
-        $apptCustomerIds = $store->appointments()->pluck('customer_id')->toArray();
+        $jobCustomerIds = $inBranch($store->jobOrders())->pluck('customer_id')->toArray();
+        $apptCustomerIds = $inBranch($store->appointments())->pluck('customer_id')->toArray();
+        // Customers added through "Add Customer" carry no branch. They show in
+        // the consolidated view and on the Main Shop (the shop's home branch),
+        // never on another branch.
+        $mainBranchId = (int) $store->branches()->where('is_main', true)->value('id');
+        $pivotCustomerIds = ! $branchId || $branchId === $mainBranchId
+            ? $store->customers()->pluck('users.id')->toArray()
+            : [];
 
         $customerIds = collect(array_merge($jobCustomerIds, $pivotCustomerIds, $apptCustomerIds))->filter()->unique();
 
@@ -40,7 +53,9 @@ class CustomerController extends Controller
                 $q->whereIn('name', ['store_owner', 'staff', 'branch_manager', 'admin']);
             })->pluck('id')->toArray();
 
-            $customerIds = $customerIds->merge($matchingUserIds)->unique();
+            // Search only narrows within this branch's customers; it never
+            // pulls in customers who have never been to this branch.
+            $customerIds = $branchId ? $customerIds : $customerIds->merge($matchingUserIds)->unique();
         }
 
         // "My customers": the ones with an appointment assigned to me or a job I'm on.
@@ -70,15 +85,15 @@ class CustomerController extends Controller
 
         $customers = $customersQuery
             ->with([
-                'jobOrders' => function ($query) use ($store) {
-                    $query->where('store_id', $store->id);
+                'jobOrders' => function ($query) use ($store, $inBranch) {
+                    $inBranch($query->where('store_id', $store->id));
                 },
                 // Eager-loaded once for all customers (already ordered so the
                 // first element is the most recent) instead of running a
                 // fresh query per customer inside the map() below — avoids an
                 // N+1 that scaled with the store's total customer count.
-                'appointments' => function ($query) use ($store) {
-                    $query->where('store_id', $store->id)->orderBy('scheduled_at', 'desc');
+                'appointments' => function ($query) use ($store, $inBranch) {
+                    $inBranch($query->where('store_id', $store->id))->orderBy('scheduled_at', 'desc');
                 },
             ])
             ->get()

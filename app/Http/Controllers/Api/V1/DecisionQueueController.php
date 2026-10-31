@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Appointment;
 use App\Models\Payment;
 use App\Models\Store;
+use App\Support\BranchScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
@@ -21,9 +22,9 @@ class DecisionQueueController extends Controller
 
     public function show(Request $request, Store $store): JsonResponse
     {
-        $user = $request->user();
-        // An owner sees the whole shop; a branch manager only their own branch.
-        $branchId = $user->hasRole('store_owner') ? null : ($user->staffProfile->store_branch_id ?? null);
+        // A branch manager only their own branch; the owner the branch picked
+        // in the switcher, or the whole shop for "All Branches".
+        $branchId = BranchScope::resolve($request, $store);
 
         $apptQuery = $store->appointments()->where('status', 'pending')
             ->when($branchId, fn ($q) => $q->where('store_branch_id', $branchId));

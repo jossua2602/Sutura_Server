@@ -3,12 +3,54 @@
 namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
+use App\Models\StoreBranch;
+use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
 class NotificationController extends Controller
 {
+    /**
+     * The user's notifications for the branch being viewed, plus store-wide
+     * ones (branch_id null).
+     * - A manager/staff account pinned to a branch always gets that branch.
+     * - The owner is notified about the main shop: with no ?branch_id (and in
+     *   "All Branches") they get their main branches; picking a branch shows
+     *   that branch's notifications instead.
+     * - Anyone else (customers) gets everything — their rows carry no branch scope.
+     */
+    private function feed(Request $request): MorphMany
+    {
+        $query = $request->user()->notifications();
+        if (($branchIds = $this->branchIds($request)) !== null) {
+            $query->where(fn ($q) => $q->whereNull('branch_id')->orWhereIn('branch_id', $branchIds));
+        }
+
+        return $query;
+    }
+
+    /** @return int[]|null null = no branch filter */
+    private function branchIds(Request $request): ?array
+    {
+        $user = $request->user();
+        if (! $user->hasRole('store_owner')) {
+            return $user->staffProfile?->store_branch_id ? [(int) $user->staffProfile->store_branch_id] : null;
+        }
+
+        if ($request->filled('branch_id')) {
+            return [(int) $request->input('branch_id')];
+        }
+
+        return StoreBranch::whereIn('store_id', $user->stores()->select('id'))
+            ->where('is_main', true)->pluck('id')->all();
+    }
+
+    private function unreadCount(Request $request): int
+    {
+        return $this->feed($request)->whereNull('read_at')->count();
+    }
+
     /**
      * Get the authenticated user's notifications.
      * Supports both quick dropdown mode (default: limit 30) and paginated
@@ -20,7 +62,7 @@ class NotificationController extends Controller
 
         // Paginated mode for the full notifications hub page
         if ($request->has('page') || $request->has('per_page') || $request->boolean('paginate')) {
-            $query = $user->notifications()->latest();
+            $query = $this->feed($request)->latest();
 
             if ($search = $request->input('search')) {
                 $query->where(function ($q) use ($search) {
@@ -58,14 +100,16 @@ class NotificationController extends Controller
                     'per_page' => $paginated->perPage(),
                     'total' => $paginated->total(),
                 ],
-                'unread_count' => $user->unreadNotifications()->count(),
+                'unread_count' => $this->unreadCount($request),
             ]);
         }
 
-        // Quick dropdown mode (cached for 15s)
+        // Quick dropdown mode (cached for 15s). A branch-filtered feed skips
+        // the cache: the forget() calls elsewhere only clear this one key.
         $cacheKey = "user_notifications_{$user->id}";
+        $cacheable = $this->branchIds($request) === null && ! app()->environment('testing');
 
-        if (! app()->environment('testing')) {
+        if ($cacheable) {
             $cached = Cache::driver('file')->get($cacheKey);
             if ($cached && is_array($cached) && isset($cached['data']) && is_array($cached['data'])) {
                 return response()->json($cached);
@@ -73,7 +117,7 @@ class NotificationController extends Controller
         }
 
         $limit = max(1, min(50, (int) $request->input('limit', 30)));
-        $rawList = $user->notifications()->latest()->limit($limit)->get();
+        $rawList = $this->feed($request)->latest()->limit($limit)->get();
         $items = $rawList->map(function ($n) {
             return [
                 'id' => $n->id,
@@ -87,10 +131,10 @@ class NotificationController extends Controller
         $payload = [
             'success' => true,
             'data' => $items,
-            'unread_count' => $user->unreadNotifications()->count(),
+            'unread_count' => $this->unreadCount($request),
         ];
 
-        if (! app()->environment('testing')) {
+        if ($cacheable) {
             Cache::driver('file')->put($cacheKey, $payload, 15);
         }
 
@@ -129,7 +173,7 @@ class NotificationController extends Controller
 
         return response()->json([
             'success' => true,
-            'unread_count' => $request->user()->unreadNotifications()->count(),
+            'unread_count' => $this->unreadCount($request),
         ]);
     }
 
@@ -147,16 +191,16 @@ class NotificationController extends Controller
 
         return response()->json([
             'success' => true,
-            'unread_count' => $request->user()->unreadNotifications()->count(),
+            'unread_count' => $this->unreadCount($request),
         ]);
     }
 
     /**
-     * Mark all notifications as read.
+     * Mark all notifications as read â€” only those in the branch being viewed.
      */
     public function markAllAsRead(Request $request): JsonResponse
     {
-        $request->user()->unreadNotifications->markAsRead();
+        $this->feed($request)->whereNull('read_at')->update(['read_at' => now()]);
 
         Cache::driver('file')->forget("user_notifications_{$request->user()->id}");
 
@@ -181,7 +225,7 @@ class NotificationController extends Controller
 
         return response()->json([
             'success' => true,
-            'unread_count' => $request->user()->unreadNotifications()->count(),
+            'unread_count' => $this->unreadCount($request),
         ]);
     }
 
@@ -200,7 +244,7 @@ class NotificationController extends Controller
 
         return response()->json([
             'success' => true,
-            'unread_count' => $request->user()->unreadNotifications()->count(),
+            'unread_count' => $this->unreadCount($request),
         ]);
     }
 
@@ -218,16 +262,17 @@ class NotificationController extends Controller
 
         return response()->json([
             'success' => true,
-            'unread_count' => $request->user()->unreadNotifications()->count(),
+            'unread_count' => $this->unreadCount($request),
         ]);
     }
 
     /**
-     * Clear all notifications for the authenticated user.
+     * Clear all notifications for the authenticated user — only those in the
+     * branch being viewed, so clearing one branch never wipes another's.
      */
     public function clearAll(Request $request): JsonResponse
     {
-        $request->user()->notifications()->delete();
+        $this->feed($request)->delete();
         Cache::driver('file')->forget("user_notifications_{$request->user()->id}");
 
         return response()->json([

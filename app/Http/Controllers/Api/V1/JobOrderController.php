@@ -100,6 +100,32 @@ class JobOrderController extends Controller
     }
 
     /**
+     * "New Job Order Created" goes to the managers of the branch the order
+     * belongs to (including one who created it — it's their branch's feed) and
+     * never to other branches' managers. The owner gets it too, tagged with the
+     * branch: their bell shows main-shop orders by default and a branch's
+     * orders when they switch to that branch (NotificationController::feed).
+     * Non-manager staff get their own "New Order" ping from JobOrder::booted().
+     */
+    private function notifyNewJobOrder(Store $store, JobOrder $jobOrder): void
+    {
+        $recipients = collect([$store->owner]);
+
+        if ($jobOrder->store_branch_id) {
+            $recipients = $recipients->merge(User::whereHas('staffProfile', function ($q) use ($store, $jobOrder) {
+                $q->where('store_id', $store->id)
+                    ->where('store_branch_id', $jobOrder->store_branch_id)
+                    ->where('is_branch_manager', true);
+            })->get());
+        }
+
+        foreach ($recipients->filter()->unique('id') as $user) {
+            $user->notify(new NewJobOrderNotification($jobOrder));
+            Cache::driver('file')->forget("user_notifications_{$user->id}");
+        }
+    }
+
+    /**
      * "ORD-0001", "ORD-0002", … — the store's single order series, shared with
      * walk-in catalog orders (see App\Support\OrderNumber).
      */
@@ -238,10 +264,7 @@ class JobOrderController extends Controller
 
         $store->customers()->syncWithoutDetaching([$jobOrder->customer_id]);
 
-        $storeOwner = $store->owner;
-        if ($storeOwner) {
-            $storeOwner->notify(new NewJobOrderNotification($jobOrder));
-        }
+        $this->notifyNewJobOrder($store, $jobOrder);
 
         return response()->json(['success' => true, 'data' => $jobOrder], 201);
     }
@@ -338,10 +361,7 @@ class JobOrderController extends Controller
 
         $store->customers()->syncWithoutDetaching([$jobOrder->customer_id]);
 
-        $storeOwner = $store->owner;
-        if ($storeOwner) {
-            $storeOwner->notify(new NewJobOrderNotification($jobOrder));
-        }
+        $this->notifyNewJobOrder($store, $jobOrder);
 
         return response()->json(['success' => true, 'data' => $jobOrder], 201);
     }
@@ -409,10 +429,7 @@ class JobOrderController extends Controller
 
         $store->customers()->syncWithoutDetaching([$jobOrder->customer_id]);
 
-        $storeOwner = $store->owner;
-        if ($storeOwner) {
-            $storeOwner->notify(new NewJobOrderNotification($jobOrder));
-        }
+        $this->notifyNewJobOrder($store, $jobOrder);
 
         return response()->json(['success' => true, 'data' => $jobOrder], 201);
     }
@@ -691,9 +708,10 @@ class JobOrderController extends Controller
 
         $store->customers()->syncWithoutDetaching([$customerId]);
 
+        $this->notifyNewJobOrder($store, $jobOrder);
+
         $storeOwner = $store->owner;
         if ($storeOwner) {
-            $storeOwner->notify(new NewJobOrderNotification($jobOrder));
             if ($gcash) {
                 $storeOwner->notify(new PaymentReceivedNotification($jobOrder, $amountDue, true));
             }
@@ -822,6 +840,29 @@ class JobOrderController extends Controller
         ]);
     }
 
+    /**
+     * A job can only be given to staff of its own branch, or to staff with no
+     * branch (they work across all branches). Someone assigned to another
+     * branch (e.g. that branch's manager) is refused. Returns the 422 to send,
+     * or null when the assignment is fine.
+     */
+    private function staffFromOtherBranch(Store $store, $staffUserId, $jobBranchId): ?JsonResponse
+    {
+        if (! $staffUserId || ! $jobBranchId) {
+            return null;
+        }
+        $profile = $store->staff()->where('user_id', $staffUserId)->with('branch:id,name')->first();
+        if ($profile && $profile->store_branch_id && (int) $profile->store_branch_id !== (int) $jobBranchId) {
+            return response()->json([
+                'success' => false,
+                'message' => 'That staff member works at '.($profile->branch?->name ?? 'another branch').'. Pick someone from this order\'s branch.',
+                'errors' => ['assigned_staff_id' => ['Staff from another branch can\'t take this order.']],
+            ], 422);
+        }
+
+        return null;
+    }
+
     public function store(StoreJobOrderRequest $request, Store $store): JsonResponse
     {
         $validated = $request->validated();
@@ -913,6 +954,15 @@ class JobOrderController extends Controller
         $validated['assigned_staff_id'] = $assignedStaffId;
         $validated['assigned_to'] = $assignedStaffId;
 
+        // An order made from an appointment belongs to that appointment's
+        // branch, whichever branch the dashboard happens to be showing.
+        if ($request->filled('appointment_id')) {
+            $apptBranch = Appointment::where('store_id', $store->id)->whereKey($request->appointment_id)->value('store_branch_id');
+            if ($apptBranch) {
+                $validated['store_branch_id'] = $apptBranch;
+            }
+        }
+
         // Auto-assign branch when not explicitly set, falling back to the
         // creator's own branch (staff/branch manager).
         $staffProfile = $request->user()->staffProfile;
@@ -933,6 +983,10 @@ class JobOrderController extends Controller
             if ($mainBranch) {
                 $validated['store_branch_id'] = $mainBranch->id;
             }
+        }
+
+        if ($wrongBranch = $this->staffFromOtherBranch($store, $assignedStaffId, $validated['store_branch_id'] ?? null)) {
+            return $wrongBranch;
         }
 
         // Determine payment status based on total amount and balance
@@ -1064,11 +1118,8 @@ class JobOrderController extends Controller
 
         $jobOrder->load(['customer:id,name', 'service', 'servicePackage:id,name,bundle_price,service_category', 'servicePackage.services:id,name', 'assignedStaff:id,name', 'staffStages', 'catalogItem:id,name,fabric_image_url', 'catalogItem.images']);
 
-        // Notify store owner of the new job order
-        $storeOwner = $store->owner;
-        if ($storeOwner) {
-            $storeOwner->notify(new NewJobOrderNotification($jobOrder));
-        }
+        // Notify the store owner and this branch's managers of the new job order
+        $this->notifyNewJobOrder($store, $jobOrder);
 
         // Notify assigned tailor of the job order assignment
         if (! empty($jobOrder->assigned_staff_id)) {
@@ -1172,6 +1223,10 @@ class JobOrderController extends Controller
                 $assignedStaffId = $validated['assigned_staff_id'] ?? $validated['assigned_to'] ?? null;
                 $validated['assigned_staff_id'] = $assignedStaffId;
                 $validated['assigned_to'] = $assignedStaffId;
+
+                if ($wrongBranch = $this->staffFromOtherBranch($store, $assignedStaffId, $jobOrder->store_branch_id)) {
+                    return $wrongBranch;
+                }
             }
         }
 
@@ -1434,6 +1489,12 @@ class JobOrderController extends Controller
                 ->where('job_order_id', $jobOrder->id)
                 ->whereNull('completed_at')
                 ->update(['completed_at' => now()]);
+            // Server-derived, like ready_for_pickup_at: the Completed Orders
+            // page's completion date and handling time read this, not updated_at
+            // (which any later edit, e.g. a payment fix, would move).
+            $jobOrder->forceFill(['completed_at' => now()])->save();
+        } elseif ($oldStatus === 'completed' && $jobOrder->status !== 'completed' && $jobOrder->completed_at) {
+            $jobOrder->forceFill(['completed_at' => null])->save();
         }
 
         // Same aging-alert pattern as ready_for_pickup_at below — on_hold is
@@ -1575,7 +1636,8 @@ class JobOrderController extends Controller
 
         $validated = $request->validate([
             'amount' => 'required|numeric|min:0.01',
-            'payment_method' => 'sometimes|string|in:'.implode(',', \App\Models\Payment::METHODS),
+            // The job's cashier desk takes cash or GCash only.
+            'payment_method' => 'sometimes|string|in:cash,gcash',
             // Where it was made and what it is for — both optional (type is worked out when absent).
             'source' => 'sometimes|in:'.implode(',', \App\Models\Payment::SOURCES),
             'type' => 'sometimes|nullable|in:'.implode(',', \App\Models\Payment::TYPES),
@@ -1848,7 +1910,7 @@ class JobOrderController extends Controller
         }
 
         $validated = $request->validate([
-            'payment_method' => 'sometimes|string|in:cash,gcash,paymaya',
+            'payment_method' => 'sometimes|string|in:cash,gcash',
             'reference' => 'nullable|string|max:255',
             'notes' => 'nullable|string',
             'receipt_path' => 'nullable|string|max:2048',

@@ -17,7 +17,11 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // In-app notifications record the branch they are about (notifications.branch_id).
+        $this->app->bind(
+            \Illuminate\Notifications\Channels\DatabaseChannel::class,
+            \App\Notifications\Channels\BranchAwareDatabaseChannel::class
+        );
     }
 
     /**

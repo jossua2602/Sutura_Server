@@ -25,6 +25,7 @@ class StoreApplication extends Model
         'business_permit_paths', 'reviewed_by', 'reviewed_at',
         'review_state', 'change_request_items', 'change_request_note', 'change_requested_at', 'change_requested_by',
         'resubmitted_at', 'update_token_hash', 'update_token_expires_at', 'change_history',
+        'previous_documents',
     ];
 
     // Raw storage paths never leave the server — admins get documents
@@ -33,6 +34,7 @@ class StoreApplication extends Model
     protected $hidden = [
         'payment_receipt_path', 'landmark_image_path', 'dti_registration_path', 'tin_id_path',
         'brgy_clearance_path', 'government_id_path', 'business_permit_paths', 'update_token_hash',
+        'previous_documents',
     ];
 
     protected $casts = [
@@ -45,6 +47,7 @@ class StoreApplication extends Model
         'resubmitted_at' => 'datetime',
         'update_token_expires_at' => 'datetime',
         'change_history' => 'array',
+        'previous_documents' => 'array',
     ];
 
     /**
@@ -115,17 +118,21 @@ class StoreApplication extends Model
         return $this->belongsTo(User::class, 'change_requested_by');
     }
 
-    /** Which documents were actually uploaded, for the admin checklist. */
+    /**
+     * Which documents were actually uploaded, for the admin checklist. Each
+     * entry says which change-request item covers it, when this version was
+     * uploaded, and the version it replaced (if the owner re-uploaded it).
+     */
     public function documentList(): array
     {
         $docs = [];
         foreach (self::DOCUMENTS as $key => $column) {
             if ($this->{$column}) {
-                $docs[] = ['key' => $key, 'type' => $this->mimeFor($this->{$column})];
+                $docs[] = $this->documentEntry($key, $this->{$column}, $key === 'receipt' ? 'payment' : $key);
             }
         }
         foreach ($this->business_permit_paths ?? [] as $i => $path) {
-            $docs[] = ['key' => 'permit-'.$i, 'type' => $this->mimeFor($path)];
+            $docs[] = $this->documentEntry('permit-'.$i, $path, 'permits');
         }
 
         return $docs;
@@ -141,6 +148,30 @@ class StoreApplication extends Model
         }
 
         return null;
+    }
+
+    /** The file a re-upload replaced, kept for the admin's Before / After view. */
+    public function previousPathFor(string $key): ?string
+    {
+        return ($this->previous_documents ?? [])[$key]['path'] ?? null;
+    }
+
+    private function documentEntry(string $key, string $path, string $item): array
+    {
+        $previous = ($this->previous_documents ?? [])[$key] ?? null;
+
+        return [
+            'key' => $key,
+            'item' => $item,
+            'type' => $this->mimeFor($path),
+            // A replaced file was uploaded when the owner resubmitted;
+            // everything else dates from the original application.
+            'uploaded_at' => $previous['replaced_at'] ?? $this->created_at?->toISOString(),
+            'previous' => $previous ? [
+                'type' => $this->mimeFor($previous['path']),
+                'uploaded_at' => $previous['uploaded_at'] ?? null,
+            ] : null,
+        ];
     }
 
     public function ownerFullName(): string

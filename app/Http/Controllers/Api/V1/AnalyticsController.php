@@ -357,29 +357,40 @@ class AnalyticsController extends Controller
 
         $upcomingAppointments = (int) ($appointmentsOverview->upcoming_count ?? 0);
 
-        $totalStaff = $store->staff()->count();
+        // Store-wide counts below follow the selected branch too; only the
+        // consolidated view (no branch) counts the whole shop.
+        $totalStaff = $branchId ? $store->staff()->where('store_branch_id', $branchId)->count() : $store->staff()->count();
         // The store_customers pivot is only populated by the CRM's own "Add
         // Customer" form — a customer who came in via a job order, walk-in
         // creation, or public appointment booking never gets attached to it,
         // so counting the pivot alone showed 0 for stores whose customers all
         // arrived through those other paths. Database UNION performs distinct
         // count inside the engine in 1 query without transferring ID arrays over network.
-        $totalCustomers = DB::table(function ($q) use ($store) {
-            $q->select('user_id as customer_id')
-                ->from('store_customers')
+        // Same rule as the Customers list (CustomerController::index): a branch
+        // counts customers with an order or appointment there; "Add Customer"
+        // entries (no branch) count on the Main Shop and in the consolidated view.
+        $mainBranchId = (int) $store->branches()->where('is_main', true)->value('id');
+        $totalCustomers = DB::table(function ($q) use ($store, $branchId, $mainBranchId) {
+            $jobs = DB::table('job_orders')
+                ->select('customer_id')
                 ->where('store_id', $store->id)
-                ->union(
-                    DB::table('job_orders')
-                        ->select('customer_id')
-                        ->where('store_id', $store->id)
-                        ->whereNotNull('customer_id')
-                )
-                ->union(
-                    DB::table('appointments')
-                        ->select('customer_id')
-                        ->where('store_id', $store->id)
-                        ->whereNotNull('customer_id')
-                );
+                ->whereNotNull('customer_id')
+                ->when($branchId, fn ($qq) => $qq->where('store_branch_id', $branchId));
+            $appointments = DB::table('appointments')
+                ->select('customer_id')
+                ->where('store_id', $store->id)
+                ->whereNotNull('customer_id')
+                ->when($branchId, fn ($qq) => $qq->where('store_branch_id', $branchId));
+
+            if (! $branchId || (int) $branchId === $mainBranchId) {
+                $q->select('user_id as customer_id')
+                    ->from('store_customers')
+                    ->where('store_id', $store->id)
+                    ->union($jobs)
+                    ->union($appointments);
+            } else {
+                $q->fromSub($jobs->union($appointments), 'branch_cust')->select('customer_id');
+            }
         }, 'all_cust')->count();
 
         // Jobs by status breakdown — used for pie chart in Reports page
@@ -721,11 +732,11 @@ class AnalyticsController extends Controller
         $storeStats = DB::selectOne('
             SELECT
                 (SELECT COUNT(*) FROM services WHERE store_id = ?) as total_services,
-                (SELECT COUNT(*) FROM catalog_orders WHERE store_id = ?) as total_collections,
+                (SELECT COUNT(*) FROM catalog_orders WHERE store_id = ? AND (? IS NULL OR store_branch_id = ?)) as total_collections,
                 (SELECT COUNT(*) FROM store_branches WHERE store_id = ?) as total_branches,
                 (SELECT AVG(rating) FROM store_reviews WHERE store_id = ?) as avg_rating,
                 (SELECT COUNT(*) FROM store_reviews WHERE store_id = ?) as total_reviews
-        ', [$store->id, $store->id, $store->id, $store->id, $store->id]);
+        ', [$store->id, $store->id, $branchId, $branchId, $store->id, $store->id, $store->id]);
 
         $responsePayload = [
             'success' => true,
@@ -736,7 +747,7 @@ class AnalyticsController extends Controller
                 'total_outstanding_balance' => $totalBalance,
                 'upcoming_appointments' => $upcomingAppointments,
                 'booking_conversion_rate' => $bookingConversionRate,
-                'total_appointments' => $store->appointments()->count(),
+                'total_appointments' => $branchAppointments()->count(),
                 'total_services' => (int) ($storeStats->total_services ?? 0),
                 'total_collections' => (int) ($storeStats->total_collections ?? 0),
                 'total_branches' => (int) ($storeStats->total_branches ?? 0),
@@ -808,9 +819,10 @@ class AnalyticsController extends Controller
                 'max' => $plan?->max_services ?? 0,
             ],
             'branches' => [
-                'used' => $store->branches()->count(),
-                // Same limit StoreBranchController::store enforces (admin-editable).
-                'max' => $plan?->branchLimit() ?? 1,
+                // Branch Shops only — the Main Shop never counts toward the
+                // plan. Same limit StoreBranchController::store enforces.
+                'used' => $store->branches()->where('is_main', false)->count(),
+                'max' => $plan?->branchLimit() ?? 0,
             ],
         ];
 

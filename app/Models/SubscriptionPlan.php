@@ -13,9 +13,10 @@ class SubscriptionPlan extends Model
     ];
 
     /**
-     * How many branches a store on this plan may have (-1 = unlimited).
+     * How many Branch Shops a store on this plan may add on top of its Main
+     * Shop (-1 = unlimited, 0 = main shop only). The Main Shop never counts.
      * Set on the admin Plans page; a plan saved before that existed falls
-     * back to the old rule (Premium unlimited, everything else one branch).
+     * back to the old rule (Premium unlimited, everything else main only).
      */
     public function branchLimit(): int
     {
@@ -23,7 +24,7 @@ class SubscriptionPlan extends Model
             return (int) $this->max_branches;
         }
 
-        return str_contains((string) $this->slug, 'premium') ? -1 : 1;
+        return str_contains((string) $this->slug, 'premium') ? -1 : 0;
     }
 
     protected $casts = [
@@ -46,7 +47,7 @@ class SubscriptionPlan extends Model
         $features = array_values(array_filter(
             $this->features ?? [],
             // A hand-typed staff line would contradict the generated one.
-            fn ($f) => ! preg_match('/^(staff accounts|up to \d+ (staff|branch)|unlimited (staff|branch)|\d+ branch)/i', (string) $f),
+            fn ($f) => ! preg_match('/^(staff accounts|up to \d+ (staff|branch)|unlimited (staff|branch)|\d+ branch|main shop)/i', (string) $f),
         ));
 
         $staff = match (true) {
@@ -58,9 +59,10 @@ class SubscriptionPlan extends Model
         $branchLimit = $this->slug !== null || $this->max_branches !== null ? $this->branchLimit() : null;
         $branches = match (true) {
             $branchLimit === null => null,
-            $branchLimit === -1 => 'Unlimited branches',
-            $branchLimit === 1 => '1 branch',
-            default => "Up to {$branchLimit} branches",
+            $branchLimit === -1 => 'Unlimited branch shops',
+            $branchLimit === 0 => 'Main shop only',
+            $branchLimit === 1 => 'Main shop + 1 branch shop',
+            default => "Main shop + up to {$branchLimit} branch shops",
         };
 
         return array_values(array_filter([$staff, $branches, ...$features]));

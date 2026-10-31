@@ -7,10 +7,17 @@ use App\Models\Role;
 use App\Models\StaffProfile;
 use App\Models\Store;
 use App\Models\StoreBranch;
+use App\Models\SubscriptionPlan;
+use App\Models\User;
 use App\Services\GoogleMapsLinkResolver;
+use App\Support\ShopLogin;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class StoreBranchController extends Controller
 {
@@ -81,46 +88,81 @@ class StoreBranchController extends Controller
             'longitude' => 'required|numeric|between:-180,180',
             'operating_hours' => 'nullable|string|max:255',
             'guide_image_url' => 'nullable|string|max:500',
-            'manager_id' => 'nullable|integer',
+            'landmark_image_url' => 'nullable|string|max:500',
+            'manager_id' => 'nullable|integer|prohibits:new_manager',
+            // "Create new staff for this branch": a brand-new account made
+            // the branch's manager, with a system-made login and temporary
+            // password shown once to the owner (existing staff keep theirs).
+            'new_manager' => 'nullable|array',
+            'new_manager.name' => 'required_with:new_manager|string|max:191',
+            'new_manager.phone' => 'nullable|string|max:20',
+            'new_manager.role' => ['required_with:new_manager', Rule::in(StaffProfile::ROLES)],
         ]);
 
         $store = Store::findOrFail($storeId);
 
-        // The plan's branch limit (admin-editable on the Plans page); a store
-        // with no live subscription gets a single branch.
-        $branchCount = $store->branches()->count();
+        // The plan's limit counts Branch Shops only (is_main = false); the
+        // Main Shop never uses it up. A store with no live subscription gets
+        // its Main Shop only.
+        $hasMain = $store->branches()->exists();
+        $branchShops = $store->branches()->where('is_main', false)->count();
         $subscription = $store->subscription()->whereIn('status', ['active', 'trial'])->first();
-        $limit = $subscription?->plan?->branchLimit() ?? 1;
+        $limit = $subscription?->plan?->branchLimit() ?? 0;
 
-        if ($limit !== -1 && $branchCount >= $limit) {
+        if ($hasMain && $limit !== -1 && $branchShops >= $limit) {
             return response()->json([
                 'success' => false,
-                'message' => "Your plan allows up to {$limit} branch".($limit === 1 ? '' : 'es').'. Upgrade your plan to add more.',
+                'message' => ($limit === 0
+                    ? 'Your plan includes your main shop only.'
+                    : "Your plan allows up to {$limit} branch shop".($limit === 1 ? '' : 's').' besides your main shop.').' Upgrade your plan to add more.',
             ], 403);
         }
 
-        $branch = StoreBranch::create([
-            'store_id' => $store->id,
-            'name' => $request->name,
-            // Same pattern as Store::slug (StoreController@store) — lets the
-            // public booking page identify a branch without exposing a raw
-            // sequential id in the URL.
-            'slug' => Str::slug($request->name).'-'.uniqid(),
-            'address' => $request->address,
-            'landmark' => $request->landmark,
-            'barangay' => $request->barangay,
-            'city' => $request->city,
-            'district' => $request->district,
-            'contact_number' => $request->contact_number,
-            'latitude' => $request->latitude,
-            'longitude' => $request->longitude,
-            'operating_hours' => $request->operating_hours,
-            'status' => 'active',
-            // Not on the public map until the System Admin has checked the location.
-            'verification_status' => 'pending',
-            'is_main' => $branchCount === 0,
-            'guide_image_url' => $request->guide_image_url,
-        ]);
+        // A new manager is a new staff account, so it uses up a staff seat:
+        // same cap StaffController::store enforces.
+        $newManager = $request->input('new_manager');
+        if ($newManager) {
+            $maxStaff = $subscription?->plan?->max_staff ?? SubscriptionPlan::where('slug', 'basic')->value('max_staff') ?? 1;
+            if ($maxStaff !== -1 && $store->staff()->count() >= $maxStaff) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Your plan allows up to {$maxStaff} staff member".($maxStaff === 1 ? '' : 's').'. Upgrade your plan, or pick an existing staff member as manager.',
+                ], 403);
+            }
+        }
+
+        $credentials = null;
+        $branch = DB::transaction(function () use ($request, $store, $hasMain, $newManager, &$credentials) {
+            $branch = StoreBranch::create([
+                'store_id' => $store->id,
+                'name' => $request->name,
+                // Same pattern as Store::slug (StoreController@store) — lets the
+                // public booking page identify a branch without exposing a raw
+                // sequential id in the URL.
+                'slug' => Str::slug($request->name).'-'.uniqid(),
+                'address' => $request->address,
+                'landmark' => $request->landmark,
+                'landmark_image_url' => $request->landmark_image_url ?: null,
+                'barangay' => $request->barangay,
+                'city' => $request->city,
+                'district' => $request->district,
+                'contact_number' => $request->contact_number,
+                'latitude' => $request->latitude,
+                'longitude' => $request->longitude,
+                'operating_hours' => $request->operating_hours,
+                'status' => 'active',
+                // Not on the public map until the System Admin has checked the location.
+                'verification_status' => 'pending',
+                'is_main' => ! $hasMain,
+                'guide_image_url' => $request->guide_image_url,
+            ]);
+
+            if ($newManager) {
+                $credentials = $this->createBranchManager($store, $branch, $newManager);
+            }
+
+            return $branch;
+        });
 
         if ($request->filled('manager_id')) {
             $staff = StaffProfile::where('store_id', $storeId)->find($request->manager_id);
@@ -144,7 +186,62 @@ class StoreBranchController extends Controller
             },
         ]);
 
-        return response()->json(['success' => true, 'message' => 'Branch added successfully.', 'data' => $branch]);
+        if ($credentials) {
+            Cache::driver('file')->forget("store_staff_{$store->id}");
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Branch added successfully.',
+            'data' => $branch,
+            // Shown once to the owner (Copy Credentials); only the hash is stored.
+            'credentials' => $credentials,
+        ]);
+    }
+
+    /**
+     * A new staff account for a new branch's manager. The login is made by
+     * the system on the shop-login domain (never a personal email, so it
+     * can't collide with a customer's) and the password is temporary: the
+     * dashboard makes them replace it on first sign-in.
+     *
+     * @return array{name: string, login_email: string, temporary_password: string}
+     */
+    private function createBranchManager(Store $store, StoreBranch $branch, array $input): array
+    {
+        $name = trim($input['name']);
+        $first = Str::slug(Str::before($name.' ', ' '), '') ?: 'staff';
+        $shop = Str::limit(preg_replace('/[^a-z0-9]/', '', Str::lower(Str::ascii($store->name))), 20, '') ?: 'shop';
+        for ($i = 1; ; $i++) {
+            $login = $first.'.'.$shop.($i === 1 ? '' : $i).'@'.ShopLogin::domain();
+            if (! ShopLogin::taken($login)) {
+                break;
+            }
+        }
+        $password = ShopLogin::temporaryPassword();
+
+        $user = User::create([
+            'name' => $name,
+            'email' => $login,
+            'password' => Hash::make($password),
+            'password_set_at' => now(),
+            'phone' => $input['phone'] ?? null,
+        ]);
+        $user->forceFill(['must_change_password' => true])->save();
+
+        if ($role = Role::where('name', 'branch_manager')->first()) {
+            $user->roles()->attach($role->id);
+        }
+
+        $store->staff()->create([
+            'user_id' => $user->id,
+            'role' => $input['role'],
+            'store_branch_id' => $branch->id,
+            'is_branch_manager' => true,
+            'hired_at' => now()->toDateString(),
+        ]);
+
+        return ['name' => $name, 'login_email' => $login, 'temporary_password' => $password];
     }
 
     public function update(Request $request, $storeId, StoreBranch $branch)
@@ -171,6 +268,7 @@ class StoreBranchController extends Controller
             'operating_hours' => 'nullable|string|max:255',
             'status' => 'nullable|in:active,inactive',
             'guide_image_url' => 'nullable|string|max:500',
+            'landmark_image_url' => 'nullable|string|max:500',
             'manager_id' => 'nullable',
         ]);
 
@@ -180,13 +278,16 @@ class StoreBranchController extends Controller
             'name' => $request->name,
             'address' => $request->address,
             'landmark' => $request->landmark,
+            'landmark_image_url' => $request->has('landmark_image_url') ? ($request->landmark_image_url ?: null) : $branch->landmark_image_url,
             'barangay' => $request->barangay,
             'city' => $request->city,
             'district' => $request->district,
             'contact_number' => $request->contact_number,
             'latitude' => $request->filled('latitude') ? $request->latitude : ($request->latitude === '' ? null : $branch->latitude),
             'longitude' => $request->filled('longitude') ? $request->longitude : ($request->longitude === '' ? null : $branch->longitude),
-            'operating_hours' => $request->operating_hours,
+            // Hours live on the store profile now; the branch form no longer
+            // sends them, so keep whatever a branch already had.
+            'operating_hours' => $request->has('operating_hours') ? $request->operating_hours : $branch->operating_hours,
             'status' => $request->status ?? $branch->status,
             'guide_image_url' => $request->filled('guide_image_url') ? $request->guide_image_url : ($request->guide_image_url === '' ? null : $branch->guide_image_url),
         ]);

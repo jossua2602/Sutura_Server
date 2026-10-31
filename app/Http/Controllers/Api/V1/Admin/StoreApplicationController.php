@@ -89,10 +89,15 @@ class StoreApplicationController extends Controller
         ]);
     }
 
-    /** Streams one private verification document; admin-only via route middleware. */
-    public function document(Store $store, string $document): Response
+    /**
+     * Streams one private verification document; admin-only via route
+     * middleware. ?version=previous streams the file a re-upload replaced.
+     */
+    public function document(Request $request, Store $store, string $document): Response
     {
-        $path = $store->application?->pathFor($document);
+        $path = $request->query('version') === 'previous'
+            ? $store->application?->previousPathFor($document)
+            : $store->application?->pathFor($document);
 
         if (! $path || ! Storage::disk(config('filesystems.private_disk', 'local'))->exists($path)) {
             return response()->json(['success' => false, 'message' => 'Document not found.'], 404);

@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\V1\AnalyticsController;
 use App\Http\Controllers\Api\V1\AppointmentController;
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
+use App\Http\Controllers\Api\V1\GoogleAuthController;
 use App\Http\Controllers\Api\V1\CatalogController;
 use App\Http\Controllers\Api\V1\CatalogInteractionController;
 use App\Http\Controllers\Api\V1\CustomerController;
@@ -75,6 +76,12 @@ Route::prefix('v1')->group(function () {
     Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:6,1,login')->name('login');
     Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:6,1,forgot-password');
     Route::post('/auth/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:6,1,reset-password');
+    // "Continue with Google" (customers only): browser goes to /redirect,
+    // Google returns to /callback, and the SPA trades the one-time code for
+    // a token at /exchange. See GoogleAuthController.
+    Route::get('/auth/google/redirect', [GoogleAuthController::class, 'redirect'])->middleware('throttle:20,1,google-redirect');
+    Route::get('/auth/google/callback', [GoogleAuthController::class, 'callback'])->middleware('throttle:20,1,google-callback');
+    Route::post('/auth/google/exchange', [GoogleAuthController::class, 'exchange'])->middleware('throttle:10,1,google-exchange');
 
     // System Admin portal sign-in — separate from the public form (which
     // refuses admin accounts) and throttled tighter. See AdminAuthController.
@@ -314,6 +321,10 @@ Route::prefix('v1')->group(function () {
                 Route::get('/receipts', [\App\Http\Controllers\Api\V1\ReceiptExportController::class, 'index']);
                 Route::get('/receipts/file', [\App\Http\Controllers\Api\V1\ReceiptExportController::class, 'file']);
                 Route::get('/receipts/export', [\App\Http\Controllers\Api\V1\ReceiptExportController::class, 'export']);
+
+                // Completed Orders page: completed jobs only + their summary cards (shows order value, so not staff)
+                Route::get('/completed-orders', [\App\Http\Controllers\Api\V1\CompletedOrderController::class, 'index']);
+                Route::get('/completed-orders/export', [\App\Http\Controllers\Api\V1\CompletedOrderController::class, 'export']);
 
                 // Job Orders (Owner/Manager specific actions)
                 Route::post('/jobs/{jobOrder}/pay', [JobOrderController::class, 'pay']);

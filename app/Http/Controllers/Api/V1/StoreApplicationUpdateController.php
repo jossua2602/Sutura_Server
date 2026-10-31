@@ -90,25 +90,49 @@ class StoreApplicationUpdateController extends Controller
         $validated = $request->validate($this->rulesFor($items));
         $store = $application->store;
 
-        // Files go to disk first; old ones are removed only after the commit.
+        // Files go to disk first. The version each one replaces is kept in
+        // previous_documents so the admin can compare Before / After; only
+        // an older kept version (from an earlier round) is removed, after
+        // the commit.
         $newPaths = [];
         $oldPaths = [];
+        $previous = $application->previous_documents ?? [];
+        $now = now()->toISOString();
+        $uploadedAt = fn (string $key) => $previous[$key]['replaced_at'] ?? $application->created_at?->toISOString();
+        $keep = function (string $key, ?string $path) use (&$previous, &$oldPaths, $uploadedAt, $now) {
+            if (! $path) {
+                return;
+            }
+            if (isset($previous[$key]['path'])) {
+                $oldPaths[] = $previous[$key]['path'];
+            }
+            $previous[$key] = ['path' => $path, 'uploaded_at' => $uploadedAt($key), 'replaced_at' => $now];
+        };
+
         foreach (self::FILES as $item => [$field, $column, $folder]) {
             if (in_array($item, $items, true)) {
                 $newPaths[$column] = $request->file($field)->store("store-applications/{$folder}", self::privateDisk());
-                $oldPaths[] = $application->{$column};
+                $keep(array_search($column, StoreApplication::DOCUMENTS, true), $application->{$column});
             }
         }
         if (in_array('permits', $items, true)) {
             $newPaths['business_permit_paths'] = collect($request->file('business_permits', []))
                 ->map(fn (UploadedFile $f) => $f->store('store-applications/permits', self::privateDisk()))
                 ->values()->all();
-            array_push($oldPaths, ...($application->business_permit_paths ?? []));
+            // Permit N is compared with the old permit N; old permits past
+            // the new count have nothing to pair with, so they go.
+            foreach ($application->business_permit_paths ?? [] as $i => $path) {
+                if ($i < count($newPaths['business_permit_paths'])) {
+                    $keep('permit-'.$i, $path);
+                } else {
+                    $oldPaths[] = $path;
+                }
+            }
         }
 
         try {
-            DB::transaction(function () use ($application, $store, $items, $validated, $newPaths) {
-                $fields = $newPaths;
+            DB::transaction(function () use ($application, $store, $items, $validated, $newPaths, $previous) {
+                $fields = $newPaths + ['previous_documents' => $previous ?: null];
 
                 if (in_array('owner', $items, true)) {
                     $fields += collect($validated)->only(['first_name', 'middle_name', 'last_name', 'suffix', 'birthday', 'contact_number'])->all();
@@ -204,7 +228,7 @@ class StoreApplicationUpdateController extends Controller
             ];
         }
         if (in_array('payment', $items, true)) {
-            $rules += ['payment_method' => ['required', Rule::in(['gcash', 'bank_transfer'])], 'payment_receipt' => $image];
+            $rules += ['payment_method' => ['required', Rule::in(['gcash'])], 'payment_receipt' => $image];
         }
         if (in_array('landmark', $items, true)) {
             $rules['landmark_image'] = $image;

@@ -27,7 +27,7 @@ class SubscriptionPlanSeeder extends Seeder
                 'price_monthly' => 299.00,
                 'price_yearly' => 2990.00,
                 'max_staff' => 2,
-                'max_branches' => 1,
+                'max_branches' => 0, // Main shop only (the Main Shop never counts)
                 'max_services' => 10,
                 'max_appointments_per_month' => 50,
                 'features' => [
@@ -54,7 +54,7 @@ class SubscriptionPlanSeeder extends Seeder
                 'price_monthly' => 799.00,
                 'price_yearly' => 7990.00,
                 'max_staff' => 5,
-                'max_branches' => 1,
+                'max_branches' => 0, // Main shop only (the Main Shop never counts)
                 'max_services' => 50,
                 'max_appointments_per_month' => 200,
                 'features' => [

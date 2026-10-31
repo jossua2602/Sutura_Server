@@ -26,7 +26,7 @@ class BranchVerificationController extends Controller
                 'id' => $b->id, 'name' => $b->name, 'is_main' => (bool) $b->is_main, 'status' => $b->status,
                 'verification_status' => $b->verification_status, 'verification_note' => $b->verification_note,
                 'address' => $b->address, 'barangay' => $b->barangay, 'district' => $b->district, 'city' => $b->city, 'landmark' => $b->landmark,
-                'latitude' => $b->latitude, 'longitude' => $b->longitude, 'guide_image_url' => $b->guide_image_url,
+                'latitude' => $b->latitude, 'longitude' => $b->longitude, 'guide_image_url' => $b->guide_image_url, 'landmark_image_url' => $b->landmark_image_url,
                 'map_url' => $b->latitude && $b->longitude ? "https://www.google.com/maps?q={$b->latitude},{$b->longitude}" : null,
                 'created_at' => $b->created_at, 'verified_at' => $b->verified_at,
                 'store' => ['id' => $b->store->id, 'name' => $b->store->name, 'slug' => $b->store->slug],

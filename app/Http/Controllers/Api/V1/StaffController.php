@@ -10,6 +10,7 @@ use App\Models\JobOrder;
 use App\Models\Role;
 use App\Models\StaffProfile;
 use App\Models\Store;
+use App\Support\BranchScope;
 use App\Models\SubscriptionPlan;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
@@ -81,14 +82,20 @@ class StaffController extends Controller
         // after the cache read/write below (not baked into the cache key) so
         // store()/update()/destroy()'s single forget() call still invalidates
         // every caller's view correctly.
-        $user = $request->user();
-        $scopedBranchId = ! $user->hasRole('store_owner') ? ($user->staffProfile?->store_branch_id ?? null) : null;
+        // The owner can also narrow it to the branch picked in the switcher
+        // (BranchScope); "All Branches" passes no branch_id.
+        $scopedBranchId = BranchScope::resolve($request, $store);
+        // ?include_floating=1 (assign-staff dropdowns): also the staff with no
+        // branch, who work across all branches.
+        $includeFloating = $request->boolean('include_floating');
+        $inScope = fn ($s) => (int) ($s['store_branch_id'] ?? 0) === (int) $scopedBranchId
+            || ($includeFloating && empty($s['store_branch_id']));
 
         $cacheKey = "store_staff_{$store->id}";
         $cached = app()->environment('testing') ? null : Cache::driver('file')->get($cacheKey);
         if (is_array($cached) && isset($cached['data']) && is_array($cached['data'])) {
             $data = $scopedBranchId
-                ? array_values(array_filter($cached['data'], fn ($s) => (int) ($s['store_branch_id'] ?? 0) === (int) $scopedBranchId))
+                ? array_values(array_filter($cached['data'], $inScope))
                 : $cached['data'];
 
             return response()->json(['success' => true, 'data' => $data]);
@@ -135,7 +142,7 @@ class StaffController extends Controller
         }
 
         $data = $scopedBranchId
-            ? array_values(array_filter($fullData, fn ($s) => (int) ($s['store_branch_id'] ?? 0) === (int) $scopedBranchId))
+            ? array_values(array_filter($fullData, $inScope))
             : $fullData;
 
         return response()->json(['success' => true, 'data' => $data]);

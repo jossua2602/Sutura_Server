@@ -26,7 +26,8 @@ class SubscriptionPlanController extends Controller
             'price_monthly' => 'required|numeric|min:0',
             'price_yearly' => 'required|numeric|min:0',
             'max_staff' => 'required|integer',
-            'max_branches' => ['nullable', 'integer', 'min:-1', 'not_in:0'],
+            // Branch Shops beyond the Main Shop: -1 = unlimited, 0 = main shop only.
+            'max_branches' => ['nullable', 'integer', 'min:-1'],
             'max_services' => 'required|integer',
             'max_appointments_per_month' => 'required|integer',
             'features' => 'nullable|array',
@@ -56,8 +57,8 @@ class SubscriptionPlanController extends Controller
             'price_monthly' => 'sometimes|numeric|min:0',
             'price_yearly' => 'sometimes|numeric|min:0',
             'max_staff' => 'sometimes|integer|min:-1',
-            // -1 = unlimited; 0 would leave a shop with no branch at all.
-            'max_branches' => ['sometimes', 'integer', 'min:-1', 'not_in:0'],
+            // Branch Shops beyond the Main Shop: -1 = unlimited, 0 = main shop only.
+            'max_branches' => ['sometimes', 'integer', 'min:-1'],
             'max_services' => 'sometimes|integer|min:-1',
             'max_appointments_per_month' => 'sometimes|integer|min:-1',
             'features' => 'nullable|array|max:20',

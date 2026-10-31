@@ -72,7 +72,8 @@ class StoreApplicationRequest extends FormRequest
             // Plan + payment
             'plan_id' => ['required', Rule::exists('subscription_plans', 'id')->where('is_active', true)],
             'billing_cycle' => ['required', Rule::in(['monthly', 'yearly'])],
-            'payment_method' => ['required', Rule::in(['gcash', 'bank_transfer'])],
+            // Plan payments are GCash only; bank transfer was removed.
+            'payment_method' => ['required', Rule::in(['gcash'])],
             'payment_receipt' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
         ];
     }
