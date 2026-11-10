@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use App\Models\JobOrder;
+use App\Support\OrderMailBox;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -51,8 +52,9 @@ class CustomMessageNotification extends Notification implements ShouldQueue
         $storeUrl = $store?->slug ? url(env('FRONTEND_URL', 'http://localhost:3000').'/store/'.$store->slug) : null;
 
         $mail = (new MailMessage)
-            ->subject($this->subject.' — '.($store?->name ?? 'SUTURA'))
-            ->greeting('Hello '.$notifiable->name.',');
+            ->subject($this->subject.' — '.$this->jobOrder->order_number.' · '.($store?->name ?? 'SUTURA'))
+            ->greeting('Hello '.$notifiable->name.',')
+            ->line(OrderMailBox::make($this->jobOrder->order_number, $this->jobOrder->tracking_code, $store?->name));
 
         // Preserve the owner's paragraph breaks as separate lines rather than
         // collapsing free-form text into one dense block.

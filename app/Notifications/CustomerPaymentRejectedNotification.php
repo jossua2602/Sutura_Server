@@ -4,6 +4,7 @@ namespace App\Notifications;
 
 use App\Models\JobOrder;
 use App\Models\Payment;
+use App\Support\OrderMailBox;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -38,7 +39,7 @@ class CustomerPaymentRejectedNotification extends Notification implements Should
     public function via(object $notifiable): array
     {
         $channels = ['database'];
-        if ($notifiable->email && ! str_starts_with($notifiable->email, 'walkin_')) {
+        if ($notifiable->hasMailableEmail()) {
             $channels[] = 'mail';
         }
 
@@ -51,8 +52,9 @@ class CustomerPaymentRejectedNotification extends Notification implements Should
         $storeUrl = $store?->slug ? url(env('FRONTEND_URL', 'http://localhost:3000').'/store/'.$store->slug) : null;
 
         $mail = (new MailMessage)
-            ->subject('Payment Not Accepted — Order '.$this->jobOrder->order_number)
+            ->subject('Payment Not Accepted — '.$this->jobOrder->order_number.' · '.($store?->name ?? 'SUTURA'))
             ->greeting('Hello '.$notifiable->name.',')
+            ->line(OrderMailBox::make($this->jobOrder->order_number, $this->jobOrder->tracking_code, $store?->name))
             ->line('Your payment of ₱'.number_format((float) $this->payment->amount, 2).' for order '.$this->jobOrder->order_number.' could not be accepted.')
             ->line('Reason: '.$this->reason)
             ->line('Please get in touch with the store or submit a new payment to continue.');

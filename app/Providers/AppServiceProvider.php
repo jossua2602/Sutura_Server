@@ -2,9 +2,12 @@
 
 namespace App\Providers;
 
+use App\Mail\AddEmailReference;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
+use Illuminate\Mail\Events\MessageSending;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\ServiceProvider;
@@ -62,5 +65,8 @@ class AppServiceProvider extends ServiceProvider
         Password::defaults(function () {
             return Password::min(8)->mixedCase()->numbers()->symbols();
         });
+
+        // Every outgoing email gets a reference number (subject, footer, header, log).
+        Event::listen(MessageSending::class, AddEmailReference::class);
     }
 }

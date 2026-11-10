@@ -22,6 +22,10 @@ class ExpireSubscriptions extends Command
             ->where('ends_at', '<', now())
             ->with('store')
             ->each(function (StoreSubscription $subscription) use (&$expired) {
+                // A queued downgrade (free, or already paid) takes over instead of expiring.
+                if (\App\Support\SubscriptionSwitcher::applyScheduled($subscription)) {
+                    return;
+                }
                 $subscription->update(['status' => 'expired']);
 
                 SubscriptionEvent::create([

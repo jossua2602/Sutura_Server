@@ -105,7 +105,7 @@ class SmsTemplates
         if ($stage === 'ready_for_fitting') {
             return [
                 'event' => 'order_ready_fitting',
-                'body' => "{$shop}: order {$no} is ready for FITTING! Please visit shop for fitting. Track: {$trackUrl}",
+                'body' => "{$shop} ({$no}): ".$job->fittingMessage().' Track: '.$trackUrl,
                 'dedupe' => 'job:'.$job->id.':fitting:'.now()->toDateString(),
             ];
         }

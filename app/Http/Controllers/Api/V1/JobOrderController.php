@@ -34,6 +34,9 @@ use Illuminate\Validation\Rule;
 
 class JobOrderController extends Controller
 {
+    /** Marks the deposit saved by store(); its amount is already off the balance. */
+    public const CREATION_DEPOSIT_NOTE = 'Initial downpayment recorded during order creation.';
+
     /**
      * Branch managers/staff pinned to a branch may only act on job orders
      * that belong to that same branch (store_owner is unrestricted). Jobs or
@@ -168,7 +171,8 @@ class JobOrderController extends Controller
         return strtoupper(str_pad($letters, 4, 'X'));
     }
 
-    private function generateTrackingCode(?Store $store = null, ?string $orderNumber = null): string
+    // Public so OrderClaimController can give a warranty-repair order its own code.
+    public static function generateTrackingCode(?Store $store = null, ?string $orderNumber = null): string
     {
         $prefix = self::generateStorePrefix($store);
         $charset = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -457,6 +461,8 @@ class JobOrderController extends Controller
             'individual_measurements' => 'nullable|array',
             'individual_measurements.unit' => 'nullable|in:in,cm',
             'individual_measurements.*' => 'nullable',
+            // Top / Bottom / Full Set…: picked on the measurements step, decides which measurements are asked.
+            'garment_category' => ['nullable', 'string', Rule::in(\App\Support\GarmentCategory::STANDARD)],
             'size_breakdown' => 'required_if:order_mode,bulk|array',
             'size_breakdown.*' => 'nullable|integer|min:0|max:500',
             'team_name' => 'nullable|string|max:255',
@@ -488,7 +494,8 @@ class JobOrderController extends Controller
         $measurements = null;
         if ($validated['order_mode'] === 'individual' && ! empty($validated['individual_measurements'])) {
             $measurements = ['unit' => $validated['individual_measurements']['unit'] ?? 'in'];
-            foreach (['chest', 'waist', 'hips', 'shoulders', 'length', 'neck', 'sleeve', 'inseam'] as $key) {
+            // "length" was split into top_length / pants_length; the old key is still accepted.
+            foreach (['chest', 'waist', 'hips', 'shoulders', 'top_length', 'pants_length', 'length', 'neck', 'sleeve', 'inseam'] as $key) {
                 $value = $validated['individual_measurements'][$key] ?? null;
                 if ($value === null || $value === '') {
                     continue;
@@ -674,7 +681,7 @@ class JobOrderController extends Controller
             'service_id' => $service->id,
             'measurement_id' => $measurementId,
             'quantity' => $quantity,
-            'garment_category' => $service->service_category,
+            'garment_category' => $validated['garment_category'] ?? $service->service_category,
             'material_source' => $validated['material_source'],
             'total_amount' => $totalAmount,
             'balance' => $totalAmount,
@@ -813,7 +820,12 @@ class JobOrderController extends Controller
         // response only ever contains genuinely-relevant rows, which stay
         // naturally small for any store actually chasing its payments.
         if ($request->boolean('unpaid_only')) {
-            $query->where('payment_status', '!=', 'paid')->where('status', '!=', 'cancelled');
+            // A cancelled or declined (rejected) order isn't money owed.
+            $query->where('payment_status', '!=', 'paid')->whereNotIn('status', ['cancelled', 'rejected']);
+        }
+        // Job Balances → "Paid": orders already settled in full (shown newest first, a capped list).
+        if ($request->boolean('paid_only')) {
+            $query->where('payment_status', 'paid')->whereNotIn('status', ['cancelled', 'rejected']);
         }
 
         // The Jobs list page's own tab badges ("All Orders 12", "Walk-in 8",
@@ -922,24 +934,31 @@ class JobOrderController extends Controller
             }
         }
 
-        // Plain staff may only open a job order from an appointment of their own
-        // shop and branch (the thesis flow: staff create job orders from scheduled
-        // fittings). They never collect money or discount, so the order starts unpaid.
+        // Plain staff create job orders too: a walk-in order, or one from an
+        // appointment. From an appointment, it must be an approved one of their
+        // own shop and branch with no order yet. Either way they never collect
+        // money or give a discount, so the order starts unpaid, and it always
+        // belongs to their own branch.
         $creator = $request->user();
         if (! $creator->hasRole('store_owner') && ! $creator->hasRole('branch_manager')) {
-            $fromAppointment = $request->filled('appointment_id') ? Appointment::find($request->appointment_id) : null;
             $staffBranch = $creator->staffProfile?->store_branch_id;
-            if (
-                ! $fromAppointment
-                || $fromAppointment->store_id !== $store->id
-                || ! in_array($fromAppointment->status, ['confirmed', 'in_progress', 'completed'], true)
-                || $fromAppointment->job_order_id
-                || ($staffBranch && $fromAppointment->store_branch_id && (int) $staffBranch !== (int) $fromAppointment->store_branch_id)
-            ) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Staff can create a job order from an approved appointment in their own branch, one per appointment.',
-                ], 403);
+            if ($request->filled('appointment_id')) {
+                $fromAppointment = Appointment::find($request->appointment_id);
+                if (
+                    ! $fromAppointment
+                    || $fromAppointment->store_id !== $store->id
+                    || ! in_array($fromAppointment->status, ['confirmed', 'in_progress', 'completed'], true)
+                    || $fromAppointment->job_order_id
+                    || ($staffBranch && $fromAppointment->store_branch_id && (int) $staffBranch !== (int) $fromAppointment->store_branch_id)
+                ) {
+                    return response()->json([
+                        'success' => false,
+                        'message' => 'That appointment can’t be turned into an order: it must be an approved appointment in your branch without an order yet.',
+                    ], 403);
+                }
+            }
+            if ($staffBranch) {
+                $validated['store_branch_id'] = $staffBranch;
             }
             $validated['balance'] = $validated['total_amount'];
             unset($validated['discount_amount'], $validated['payment_method']);
@@ -1106,13 +1125,20 @@ class JobOrderController extends Controller
             }
         }
 
-        // Record initial payment history if downpayment occurred
+        // Record initial payment history if downpayment occurred. The order's
+        // balance already has this amount taken off (balance = total - deposit),
+        // so the payment is saved as verified. Leaving it unverified made the
+        // Verify button subtract it a second time and mark the order fully paid.
         if ($initialPayment > 0) {
             $jobOrder->payments()->create([
                 'amount' => $initialPayment,
                 'payment_method' => $validated['payment_method'] ?? 'cash',
+                'source' => 'walk_in',
+                'type' => $balance <= 0 ? 'full' : 'deposit',
                 'recorded_by' => $request->user()->id,
-                'notes' => 'Initial downpayment recorded during order creation.',
+                'notes' => self::CREATION_DEPOSIT_NOTE,
+                'verified_at' => now(),
+                'verified_by' => $request->user()->id,
             ]);
         }
 
@@ -1285,14 +1311,18 @@ class JobOrderController extends Controller
                     'message' => 'This order does not need a final fitting. Move it to QC / Ironing or Ready for Pickup instead.',
                 ], 422);
             }
+            // A required fitting is satisfied once the order has been through Ready
+            // for Fitting (no appointment is needed anymore), or by a completed
+            // fitting appointment on older orders.
             if (
                 in_array($newStatus, ['ready_for_pickup', 'completed'], true)
                 && $jobOrder->fitting_requirement === 'required'
+                && (int) $jobOrder->fitting_rounds === 0
                 && ! $jobOrder->appointments()->where('appointment_type', 'fitting')->where('status', 'completed')->exists()
             ) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'A final fitting is required for this order. Complete the fitting appointment before handing it over.',
+                    'message' => 'A final fitting is required for this order. Move it to Ready for Fitting so the customer can come in and try it on first.',
                 ], 422);
             }
 
@@ -1319,22 +1349,6 @@ class JobOrderController extends Controller
                     'success' => false,
                     'message' => 'Use the dedicated reject endpoint to decline a pending order.',
                 ], 422);
-            }
-
-            // Fitting limit, 'block' policy — the counterpart to the 'fee'
-            // policy's charge below (Phase 3 block, after save). Checked
-            // pre-save, same style as the DP gate above, so a blocked
-            // transition never partially applies. 'fee' policy (default)
-            // is unaffected here; it's still handled after save, where the
-            // auto-fitting appointment actually gets created.
-            if ($newStatus === 'ready_for_fitting' && $oldStatus !== 'ready_for_fitting' && $store->fitting_limit_policy === 'block') {
-                $priorFittingCount = $jobOrder->appointments()->where('appointment_type', 'fitting')->count();
-                if ($store->fitting_limit && $priorFittingCount >= $store->fitting_limit) {
-                    return response()->json([
-                        'success' => false,
-                        'message' => "This job has already used its {$store->fitting_limit} included fitting session(s), and this shop does not allow additional fittings beyond the limit. Move it to QC/Ironing or Ready for Pickup instead, or contact the customer directly.",
-                    ], 422);
-                }
             }
         }
 
@@ -1493,6 +1507,8 @@ class JobOrderController extends Controller
             // page's completion date and handling time read this, not updated_at
             // (which any later edit, e.g. a payment fix, would move).
             $jobOrder->forceFill(['completed_at' => now()])->save();
+            // A finished warranty repair resolves its claim (and opens a new 3-day window).
+            OrderClaimController::resolveRepair($jobOrder);
         } elseif ($oldStatus === 'completed' && $jobOrder->status !== 'completed' && $jobOrder->completed_at) {
             $jobOrder->forceFill(['completed_at' => null])->save();
         }
@@ -1526,20 +1542,13 @@ class JobOrderController extends Controller
             ], $jobOrder);
         }
 
-        // Phase 3: "Ready for Fitting" auto-triggers a Fitting appointment for
-        // the customer instead of the owner having to remember to book one
-        // manually. Guarded against duplicates so looping back through
-        // Final Adjustments and forward again doesn't spawn a second one —
-        // the placeholder date/time is a rough default the owner/staff is
-        // expected to actually reschedule with the customer.
+        // Phase 3: "Ready for Fitting" records a fitting round and the date it
+        // started; the customer is notified to come in within 7 days (no
+        // appointment to book). An open fitting appointment the shop booked by
+        // hand still counts as this round, so it isn't counted twice.
         if ($jobOrder->status === 'ready_for_fitting' && $oldStatus !== 'ready_for_fitting') {
-            // Locking the job order row for the duration of the check+create
-            // serializes two near-simultaneous transitions into
-            // 'ready_for_fitting' for the same job — without this, both
-            // requests could pass the "no open fitting exists yet" check
-            // before either INSERT commits, spawning two auto-fitting
-            // appointments instead of one.
-            DB::transaction(function () use ($store, $jobOrder) {
+            // Row lock: two near-simultaneous transitions can't both count a round.
+            DB::transaction(function () use ($jobOrder) {
                 JobOrder::where('id', $jobOrder->id)->lockForUpdate()->firstOrFail();
 
                 $hasOpenFitting = $jobOrder->appointments()
@@ -1547,55 +1556,14 @@ class JobOrderController extends Controller
                     ->whereIn('status', ['pending', 'confirmed', 'in_progress'])
                     ->exists();
 
-                if (! $hasOpenFitting) {
-                    // Fitting session limit — the store's fitting_limit is how many
-                    // fitting appointments a job gets before fitting_limit_policy
-                    // kicks in: 'fee' (default, handled below) or 'block' (the
-                    // pre-save gate above already rejected the transition, so this
-                    // code only ever runs here under the 'fee' policy — not a
-                    // rental concept; every prior fitting counts toward it,
-                    // completed or not, since a no-show/cancelled session still
-                    // used the store's time). A job cycling ready_for_fitting →
-                    // final_adjustments → ready_for_fitting again is exactly the
-                    // real scenario this exists for: a second fitting round after
-                    // adjustments.
-                    $priorFittingCount = $jobOrder->appointments()->where('appointment_type', 'fitting')->count();
-                    $overFittingLimit = $store->fitting_limit && $priorFittingCount >= $store->fitting_limit;
-
-                    // "Tomorrow at 10am" is just a rough placeholder the owner
-                    // is expected to reschedule with the customer anyway — but
-                    // landing it on a day the store announced as closed (see
-                    // Store::closureTitleOn, also enforced for real bookings in
-                    // AppointmentController) would still look like a real bug
-                    // to whoever opens this appointment first. Walk forward to
-                    // the next open day instead, capped so a long closure
-                    // can't spin this into an unbounded loop.
-                    $placeholderDate = now()->addDay()->setTime(10, 0);
-                    for ($i = 0; $i < 30 && $store->closureTitleOn($placeholderDate, $jobOrder->store_branch_id); $i++) {
-                        $placeholderDate = $placeholderDate->copy()->addDay();
-                    }
-
-                    $jobOrder->appointments()->create([
-                        'store_id' => $store->id,
-                        'store_branch_id' => $jobOrder->store_branch_id,
-                        'customer_id' => $jobOrder->customer_id,
-                        'appointment_type' => 'fitting',
-                        'intake_channel' => 'walk_in',
-                        'scheduled_at' => $placeholderDate,
-                        'duration_minutes' => Appointment::TYPE_DEFAULT_DURATIONS['fitting'],
-                        'status' => 'pending',
-                        'notes' => "Auto-generated when Job Order {$jobOrder->order_number} became Ready for Fitting — please confirm the actual date/time with the customer."
-                            .($overFittingLimit ? " This is fitting #{$priorFittingCount}+1, past the store's {$store->fitting_limit}-session limit — a ₱{$store->fitting_fee} fitting fee has been added to the balance." : ''),
-                    ]);
-
-                    if ($overFittingLimit && $store->fitting_fee > 0) {
-                        $jobOrder->increment('total_amount', $store->fitting_fee);
-                        $jobOrder->increment('balance', $store->fitting_fee);
-                        if ($jobOrder->payment_status === 'paid') {
-                            $jobOrder->update(['payment_status' => 'partial']);
-                        }
-                    }
-                }
+                // No appointment is created: the customer gets the shop's fitting
+                // message ("visit within N days", Booking Flow Setup). The visit-by
+                // date counts from now. The free-fitting limit / extra-fitting fee
+                // were removed from the shop settings, so no fee is added here.
+                $jobOrder->update([
+                    'fitting_rounds' => min(255, (int) $jobOrder->fitting_rounds + ($hasOpenFitting ? 0 : 1)),
+                    'fitting_ready_at' => now(),
+                ]);
             });
         }
 
@@ -1788,6 +1756,14 @@ class JobOrderController extends Controller
 
                 $locked = JobOrder::where('id', $jobOrder->id)->lockForUpdate()->firstOrFail();
 
+                // A deposit taken while creating the order was already subtracted
+                // from the balance at creation; confirming it must not subtract it again.
+                if ($lockedPayment->notes === self::CREATION_DEPOSIT_NOTE) {
+                    $lockedPayment->update(['verified_at' => now(), 'verified_by' => $request->user()->id]);
+
+                    return;
+                }
+
                 $currentBalance = (float) $locked->balance;
                 $amount = (float) $lockedPayment->amount;
                 if ($amount > $currentBalance) {
@@ -1935,6 +1911,46 @@ class JobOrderController extends Controller
      * balance again — that state becoming possible is exactly how a fraud
      * discovered after the garment was already handed over becomes visible.
      */
+    /**
+     * Collect Payments → Digital Receipts: every non-cash payment logged on this
+     * store's job orders (Cashier Desk GCash, online-order deposits, customer
+     * balance payments), newest first. Cash is verified on the spot, so it
+     * never needs a receipt check. Same branch rule as the jobs list.
+     */
+    public function jobPayments(Request $request, Store $store): JsonResponse
+    {
+        $user = $request->user();
+        $branchId = (! $user->hasRole('store_owner') && $user->staffProfile?->store_branch_id)
+            ? $user->staffProfile->store_branch_id
+            : ($request->filled('branch_id') ? (int) $request->branch_id : null);
+
+        $payments = Payment::query()
+            ->where('payment_method', '!=', 'cash')
+            ->whereHas('jobOrder', fn ($q) => $q
+                ->where('store_id', $store->id)
+                ->when($branchId, fn ($qq) => $qq->where('store_branch_id', $branchId)))
+            ->with(['jobOrder:id,order_number,customer_id,store_branch_id', 'jobOrder.customer:id,name,email,contact_email'])
+            ->latest()
+            ->limit(300)
+            ->get()
+            ->map(fn (Payment $p) => [
+                'id' => $p->id,
+                'job_order_id' => $p->job_order_id,
+                'order_number' => $p->jobOrder?->order_number,
+                'customer' => $p->jobOrder?->customer ? ['name' => $p->jobOrder->customer->name, 'email' => $p->jobOrder->customer->email] : null,
+                'amount' => $p->amount,
+                'payment_type' => $p->type, // deposit | partial | full | balance (labels the receipt card)
+                'payment_method' => $p->payment_method,
+                'reference' => $p->reference,
+                'receipt_path' => $p->receipt_path,
+                'created_at' => $p->created_at,
+                // Same words the receipts queue uses for appointments / catalog orders.
+                'payment_status' => $p->rejected_at ? 'rejected' : ($p->verified_at ? 'paid' : 'pending'),
+            ]);
+
+        return response()->json(['success' => true, 'data' => $payments]);
+    }
+
     public function rejectPayment(Request $request, Store $store, JobOrder $jobOrder, Payment $payment): JsonResponse
     {
         if ($jobOrder->store_id !== $store->id || $payment->job_order_id !== $jobOrder->id) {
@@ -2087,9 +2103,36 @@ class JobOrderController extends Controller
             ], 422);
         }
 
-        $jobOrder->update([
-            'status' => 'production',
+        // Same as a walk-in order: a due date is required (unless the order
+        // already has one), and staff can be assigned at the same time.
+        $validated = $request->validate([
+            'due_date' => [$jobOrder->due_date ? 'nullable' : 'required', 'date', 'after_or_equal:today'],
+            'assigned_staff_id' => ['nullable', 'integer', 'exists:users,id'],
+        ], [
+            'due_date.required' => 'Set a due date before approving this order.',
+            'due_date.after_or_equal' => 'The due date can\'t be in the past.',
         ]);
+
+        $changes = ['status' => 'production'];
+        if (! empty($validated['due_date'])) {
+            $changes['due_date'] = $validated['due_date'];
+        }
+        if (! empty($validated['assigned_staff_id'])) {
+            if (! $store->staff()->where('user_id', $validated['assigned_staff_id'])->exists()) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Pick a staff member from this shop.',
+                    'errors' => ['assigned_staff_id' => ['Not a staff member of this shop.']],
+                ], 422);
+            }
+            if ($wrongBranch = $this->staffFromOtherBranch($store, (int) $validated['assigned_staff_id'], $jobOrder->store_branch_id)) {
+                return $wrongBranch;
+            }
+            $changes['assigned_staff_id'] = (int) $validated['assigned_staff_id'];
+            $changes['assigned_to'] = (int) $validated['assigned_staff_id'];
+        }
+
+        $jobOrder->update($changes);
 
         $jobOrder->customer?->notify(new JobStatusUpdatedNotification($jobOrder, 'approved', $request->user()));
 
@@ -2137,7 +2180,7 @@ class JobOrderController extends Controller
         ]);
 
         $customer = $jobOrder->customer;
-        if (! $customer || ! $customer->email || str_starts_with($customer->email, 'walkin_')) {
+        if (! $customer || ! $customer->hasMailableEmail()) {
             return response()->json([
                 'success' => false,
                 'message' => 'This customer has no real email on file to send to.',
@@ -2148,7 +2191,7 @@ class JobOrderController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Message sent to '.$customer->email.'.',
+            'message' => 'Message sent to '.$customer->notificationEmail().'.',
         ]);
     }
 

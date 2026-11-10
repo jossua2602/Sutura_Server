@@ -71,6 +71,25 @@ class User extends Authenticatable
         return $this->contact_email ?: $this->email;
     }
 
+    /**
+     * Where this person actually receives email: their notification email
+     * (contact_email — e.g. a walk-in's Gmail typed by staff, or a shop
+     * owner's inbox), else their login email. Null when neither is a real
+     * inbox (a walk-in placeholder login "walkin_…@sutura.com" with no
+     * notification email).
+     */
+    public function notificationEmail(): ?string
+    {
+        $address = $this->contact_email ?: $this->email;
+
+        return $address && ! str_starts_with($address, 'walkin_') ? $address : null;
+    }
+
+    public function hasMailableEmail(): bool
+    {
+        return $this->notificationEmail() !== null;
+    }
+
     public function hasRole(string $role): bool
     {
         return $this->roles()->where('name', $role)->exists();

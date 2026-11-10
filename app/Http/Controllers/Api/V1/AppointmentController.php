@@ -355,7 +355,7 @@ class AppointmentController extends Controller
         $roles = $user->roles->pluck('name');
 
         $query = $store->appointments()->with([
-            'customer:id,name,email,phone',
+            'customer:id,name,email,contact_email,phone',
             'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price',
             'branch:id,name',
             'assignedStaff:id,name',
@@ -436,6 +436,13 @@ class AppointmentController extends Controller
             $data['store_branch_id'] = $store->branches()->first()->id;
         }
 
+        // Staff (and branch managers) pinned to a branch book only for that branch,
+        // whatever branch the form sent — same scoping as the appointment list.
+        $user = $request->user();
+        if (! $user->hasRole('store_owner') && ($pinned = $user->staffProfile?->store_branch_id)) {
+            $data['store_branch_id'] = $pinned;
+        }
+
         // Auto-calculated duration based on Appointment Type — the owner's
         // form no longer offers a manual Duration selector at all.
         $data['duration_minutes'] = $data['duration_minutes']
@@ -461,7 +468,7 @@ class AppointmentController extends Controller
         );
 
         $appointment = $store->appointments()->create($data);
-        $appointment->load(['customer:id,name,email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
+        $appointment->load(['customer:id,name,email,contact_email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
 
         // Walk-in claims the slot: preempt all overlapping pending online bookings
         $preemptedCount = 0;
@@ -470,26 +477,8 @@ class AppointmentController extends Controller
             $preemptedCount++;
         }
 
-        // Fitting session limit — same enforcement as the auto-generated
-        // "Ready for Fitting" appointment in JobOrderController@update. A
-        // manually-booked extra fitting on an already-existing job counts
-        // against the store's fitting_limit too, not just the automatic one.
-        if ($data['appointment_type'] === 'fitting' && ! empty($data['job_order_id'])) {
-            $jobOrder = JobOrder::find($data['job_order_id']);
-            if ($jobOrder) {
-                $priorFittingCount = $jobOrder->appointments()
-                    ->where('appointment_type', 'fitting')
-                    ->where('id', '!=', $appointment->id)
-                    ->count();
-                if ($store->fitting_limit && $priorFittingCount >= $store->fitting_limit && $store->fitting_fee > 0) {
-                    $jobOrder->increment('total_amount', $store->fitting_fee);
-                    $jobOrder->increment('balance', $store->fitting_fee);
-                    if ($jobOrder->payment_status === 'paid') {
-                        $jobOrder->update(['payment_status' => 'partial']);
-                    }
-                }
-            }
-        }
+        // (The free-fitting limit / extra-fitting fee was removed from the shop
+        // settings, so booking an extra fitting no longer adds a fee.)
 
         // Notify store owner of new booking
         $storeOwner = $store->owner;
@@ -503,7 +492,7 @@ class AppointmentController extends Controller
                 ? "Walk-in appointment confirmed. {$preemptedCount} pending online booking(s) for this slot were notified to reschedule."
                 : 'Appointment created successfully.',
             'preempted_count' => $preemptedCount,
-            'data' => $appointment->load(['customer:id,name,email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']),
+            'data' => $appointment->load(['customer:id,name,email,contact_email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']),
         ], 201);
     }
 
@@ -596,7 +585,7 @@ class AppointmentController extends Controller
                 ? "Follow-up appointment confirmed. {$preemptedCount} pending online booking(s) for this slot were notified to reschedule."
                 : 'Follow-up appointment created.',
             'preempted_count' => $preemptedCount,
-            'data' => $appointment->load(['customer:id,name,email,phone', 'branch:id,name', 'jobOrder:id,order_number']),
+            'data' => $appointment->load(['customer:id,name,email,contact_email,phone', 'branch:id,name', 'jobOrder:id,order_number']),
         ], 201);
     }
 
@@ -795,7 +784,7 @@ class AppointmentController extends Controller
                     $appointment->forceFill(['reminder_sent_at' => null])->save();
                 }
 
-                $appointment->load(['customer:id,name,email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
+                $appointment->load(['customer:id,name,email,contact_email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
 
                 // ── Notifications ─────────────────────────────────────────────────────
                 $customer = $appointment->customer;
@@ -905,7 +894,7 @@ class AppointmentController extends Controller
                         ]);
                     }
                 }
-                $appointment->load(['customer:id,name,email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
+                $appointment->load(['customer:id,name,email,contact_email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
 
                 // Notify customer
                 $customer = $appointment->customer;
@@ -1012,7 +1001,7 @@ class AppointmentController extends Controller
                 'cancellation_reason' => $validated['reason'],
                 'rebooking_blocked' => $validated['block_rebooking'] ?? false,
             ]);
-            $appointment->load(['customer:id,name,email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
+            $appointment->load(['customer:id,name,email,contact_email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name', 'assignedStaff:id,name', 'jobOrder:id,order_number']);
 
             $customer = $appointment->customer;
             if ($customer) {
@@ -1073,7 +1062,7 @@ class AppointmentController extends Controller
             'ip_address' => $request->ip(),
         ]);
 
-        $appointment->load(['store:id,name,slug,logo_path', 'customer:id,name,email,phone']);
+        $appointment->load(['store:id,name,slug,logo_path', 'customer:id,name,email,contact_email,phone']);
         $appointment->customer?->notify(new AppointmentStatusNotification($appointment, 'rejected', null, $request->user()));
 
         return response()->json(['success' => true, 'message' => 'Appointment rejected.', 'data' => $appointment]);
@@ -1129,7 +1118,7 @@ class AppointmentController extends Controller
         return response()->json([
             'success' => true,
             'message' => $staffId ? 'Staff assigned.' : 'Staff unassigned.',
-            'data' => $appointment->load(['customer:id,name,email,phone', 'assignedStaff:id,name']),
+            'data' => $appointment->load(['customer:id,name,email,contact_email,phone', 'assignedStaff:id,name']),
         ]);
     }
 
@@ -1162,7 +1151,7 @@ class AppointmentController extends Controller
         return response()->json([
             'success' => true,
             'message' => 'Payment status updated.',
-            'data' => $appointment->load(['customer:id,name,email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name']),
+            'data' => $appointment->load(['customer:id,name,email,contact_email,phone', 'service:id,name,base_price,service_category,service_leaf_type', 'catalogItem:id,name,department,subcategory,garment_structure,garment_type', 'servicePackage:id,name,bundle_price,service_category,image_url', 'servicePackage.services:id,name,base_price', 'branch:id,name']),
         ]);
     }
 }

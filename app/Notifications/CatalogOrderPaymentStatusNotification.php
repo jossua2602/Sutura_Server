@@ -3,6 +3,7 @@
 namespace App\Notifications;
 
 use App\Models\CatalogOrder;
+use App\Support\OrderMailBox;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
@@ -30,7 +31,7 @@ class CatalogOrderPaymentStatusNotification extends Notification implements Shou
     public function via(object $notifiable): array
     {
         $channels = ['database'];
-        if ($notifiable->email && ! str_starts_with($notifiable->email, 'walkin_')) {
+        if ($notifiable->hasMailableEmail()) {
             $channels[] = 'mail';
         }
 
@@ -41,14 +42,18 @@ class CatalogOrderPaymentStatusNotification extends Notification implements Shou
     {
         $accepted = $this->status === 'paid';
         $amount = number_format((float) $this->order->total_amount, 2);
+        // The shop's own order number (ORD-0014), not the internal row id.
+        $number = $this->order->order_number ?: '#'.$this->order->id;
+        $storeName = $this->order->store?->name;
         $mail = (new MailMessage)
-            ->subject(($accepted ? 'Payment Confirmed' : 'Payment Not Accepted').' — Order #'.$this->order->id)
-            ->greeting('Hello '.$notifiable->name.',');
+            ->subject(($accepted ? 'Payment Confirmed' : 'Payment Not Accepted').' — '.$number.' · '.($storeName ?? 'SUTURA'))
+            ->greeting('Hello '.$notifiable->name.',')
+            ->line(OrderMailBox::make($number, null, $storeName));
 
         if ($accepted) {
-            $mail->line('Your payment of ₱'.$amount.' for order #'.$this->order->id.' has been confirmed. Thank you!');
+            $mail->line('Your payment of ₱'.$amount.' for order '.$number.' has been confirmed. Thank you!');
         } else {
-            $mail->line('Your payment of ₱'.$amount.' for order #'.$this->order->id.' could not be accepted.')
+            $mail->line('Your payment of ₱'.$amount.' for order '.$number.' could not be accepted.')
                 ->line('Please get in touch with the store or resubmit your payment.');
         }
 

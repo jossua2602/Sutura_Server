@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\StoreApplication;
+use App\Support\Psgc;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -19,7 +20,6 @@ use Illuminate\Validation\Rule;
  */
 class StoreApplicationUpdateController extends Controller
 {
-    private const DISTRICTS = ['Poblacion', 'Talomo', 'Buhangin', 'Agdao', 'Toril', 'Bunawan', 'Calinan', 'Tugbok'];
 
     /** Upload field on the form => [document column, storage folder]. */
     private const FILES = [
@@ -28,6 +28,7 @@ class StoreApplicationUpdateController extends Controller
         'tin' => ['tin_id', 'tin_id_path', 'tin'],
         'barangay' => ['brgy_clearance', 'brgy_clearance_path', 'barangay'],
         'government-id' => ['government_id', 'government_id_path', 'government-id'],
+        'selfie' => ['selfie_with_id', 'selfie_with_id_path', 'selfies'],
         'payment' => ['payment_receipt', 'payment_receipt_path', 'receipts'],
     ];
 
@@ -67,9 +68,15 @@ class StoreApplicationUpdateController extends Controller
                 ] : null,
                 'shop' => $items->contains('shop') ? [
                     'store_name' => $store->name,
-                    'address' => $store->address,
+                    // Street line only; the picker holds the rest.
+                    'address' => $main?->street ?? $store->address,
                     'barangay' => $main?->barangay,
                     'district' => $main?->district,
+                    'province_code' => $main?->province_code,
+                    'city_code' => $main?->city_code,
+                    'district_code' => $main?->district_code
+                        ?? ($main?->city_code === Psgc::DAVAO_CITY && in_array($main?->district, Psgc::DAVAO_DISTRICTS, true) ? 'davao:'.$main->district : null),
+                    'barangay_code' => $main?->barangay_code,
                     'latitude' => $store->latitude,
                     'longitude' => $store->longitude,
                 ] : null,
@@ -89,6 +96,19 @@ class StoreApplicationUpdateController extends Controller
         $items = collect($application->requestedItems())->pluck('key')->all();
         $validated = $request->validate($this->rulesFor($items));
         $store = $application->store;
+
+        // Shop address: the PSGC picks must belong together (same check as the application).
+        $location = null;
+        if (in_array('shop', $items, true)) {
+            $resolved = Psgc::resolve($validated['province_code'], $validated['city_code'], $validated['district_code'] ?? null, $validated['barangay_code']);
+            if (! $resolved['ok']) {
+                throw \Illuminate\Validation\ValidationException::withMessages($resolved['errors']);
+            }
+            $location = Psgc::branchColumns($validated, $resolved['names'], trim($validated['address']));
+            if (! $location['district'] && $validated['city_code'] === Psgc::DAVAO_CITY && in_array($validated['district'] ?? null, Psgc::DAVAO_DISTRICTS, true)) {
+                $location['district'] = $validated['district'];
+            }
+        }
 
         // Files go to disk first. The version each one replaces is kept in
         // previous_documents so the admin can compare Before / After; only
@@ -131,7 +151,7 @@ class StoreApplicationUpdateController extends Controller
         }
 
         try {
-            DB::transaction(function () use ($application, $store, $items, $validated, $newPaths, $previous) {
+            DB::transaction(function () use ($application, $store, $items, $validated, $newPaths, $previous, $location) {
                 $fields = $newPaths + ['previous_documents' => $previous ?: null];
 
                 if (in_array('owner', $items, true)) {
@@ -148,15 +168,15 @@ class StoreApplicationUpdateController extends Controller
                 if (in_array('shop', $items, true)) {
                     $store->update([
                         'name' => $validated['store_name'],
-                        'address' => $validated['address'],
+                        'address' => $location['address'],
+                        'city' => $location['city'],
+                        'province' => $location['province'],
                         'latitude' => $validated['latitude'],
                         'longitude' => $validated['longitude'],
                     ]);
                     $store->branches()->where('is_main', true)->update([
                         'name' => $validated['store_name'].' — Main',
-                        'address' => $validated['address'],
-                        'barangay' => $validated['barangay'] ?? null,
-                        'district' => in_array($validated['district'] ?? null, self::DISTRICTS, true) ? $validated['district'] : null,
+                        ...$location,
                         'latitude' => $validated['latitude'],
                         'longitude' => $validated['longitude'],
                     ]);
@@ -164,6 +184,12 @@ class StoreApplicationUpdateController extends Controller
 
                 if (in_array('payment', $items, true)) {
                     $fields['payment_method'] = $validated['payment_method'];
+                    // Admin → Payments shows the new receipt on the application's payment.
+                    $payment = \App\Models\SubscriptionUpgradeRequest::where('store_application_id', $application->id)->where('status', 'pending')->first();
+                    if ($payment && isset($newPaths['payment_receipt_path'])) {
+                        $payment->update(['payment_receipt_path' => $newPaths['payment_receipt_path']]);
+                        $payment->log('receipt_replaced', $application->user_id, 'New receipt sent through Request Changes.');
+                    }
                 }
                 if (in_array('government-id', $items, true)) {
                     $fields['government_id_type'] = $validated['government_id_type'];
@@ -221,7 +247,10 @@ class StoreApplicationUpdateController extends Controller
             $rules += [
                 'store_name' => ['required', 'string', 'max:191'],
                 'address' => ['required', 'string', 'max:255'],
-                'barangay' => ['nullable', 'string', 'max:100'],
+                'province_code' => ['required', 'string', 'max:10'],
+                'city_code' => ['required', 'string', 'max:10'],
+                'district_code' => ['nullable', 'string', 'max:20'],
+                'barangay_code' => ['required', 'string', 'max:10'],
                 'district' => ['nullable', 'string', 'max:100'],
                 'latitude' => ['required', 'numeric', 'between:-90,90'],
                 'longitude' => ['required', 'numeric', 'between:-180,180'],
@@ -232,6 +261,9 @@ class StoreApplicationUpdateController extends Controller
         }
         if (in_array('landmark', $items, true)) {
             $rules['landmark_image'] = $image;
+        }
+        if (in_array('selfie', $items, true)) {
+            $rules['selfie_with_id'] = $image;
         }
         foreach (['dti' => 'dti_registration', 'tin' => 'tin_id', 'barangay' => 'brgy_clearance'] as $item => $field) {
             if (in_array($item, $items, true)) {

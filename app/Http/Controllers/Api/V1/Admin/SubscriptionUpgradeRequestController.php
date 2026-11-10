@@ -3,11 +3,8 @@
 namespace App\Http\Controllers\Api\V1\Admin;
 
 use App\Http\Controllers\Controller;
-use App\Models\Store;
 use App\Models\SubscriptionUpgradeRequest;
-use App\Notifications\StoreActivityNotification;
-use App\Support\AdminAudit;
-use App\Support\SubscriptionSwitcher;
+use App\Support\PlatformPayments;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
@@ -45,65 +42,17 @@ class SubscriptionUpgradeRequestController extends Controller
         return Storage::disk(config('filesystems.private_disk', 'local'))->response($path, null, ['Cache-Control' => 'private, no-store']);
     }
 
+    // Older endpoints kept for compatibility; the rules live in PlatformPayments
+    // (the Payments page uses Admin\PlatformPaymentController).
     public function approve(Request $request, SubscriptionUpgradeRequest $upgradeRequest): JsonResponse
     {
-        if ($upgradeRequest->status !== 'pending') {
-            return response()->json(['success' => false, 'message' => 'This payment has already been reviewed.'], 422);
-        }
-
-        $store = $upgradeRequest->store;
-        $plan = $upgradeRequest->plan;
-
-        // Usage may have changed since the request was made.
-        if ($error = SubscriptionSwitcher::misfit($store, $plan)) {
-            return response()->json(['success' => false, 'message' => $error], 422);
-        }
-
-        SubscriptionSwitcher::apply($store, $plan, $upgradeRequest->billing_cycle, $request->user()->id);
-
-        $upgradeRequest->update([
-            'status' => 'approved',
-            'reviewed_by' => $request->user()->id,
-            'reviewed_at' => now(),
-            'rejection_reason' => null,
-        ]);
-
-        AdminAudit::record($request, 'plan_upgrade_approved', Store::class, $store->id, $store->name.' → '.$plan->name, $store->id);
-
-        $upgradeRequest->requester?->notify(new StoreActivityNotification(
-            'plan_upgrade_approved',
-            'Plan Upgrade Approved',
-            "Your payment was confirmed. {$store->name} is now on the {$plan->name} plan.",
-            '/dashboard/billing'
-        ));
-
-        return response()->json(['success' => true, 'message' => "{$store->name} is now on {$plan->name}."]);
+        return response()->json(['success' => true, 'message' => PlatformPayments::approve($request, $upgradeRequest)]);
     }
 
     public function reject(Request $request, SubscriptionUpgradeRequest $upgradeRequest): JsonResponse
     {
-        if ($upgradeRequest->status !== 'pending') {
-            return response()->json(['success' => false, 'message' => 'This payment has already been reviewed.'], 422);
-        }
-
         $validated = $request->validate(['reason' => ['required', 'string', 'max:500']]);
-
-        $upgradeRequest->update([
-            'status' => 'rejected',
-            'reviewed_by' => $request->user()->id,
-            'reviewed_at' => now(),
-            'rejection_reason' => $validated['reason'],
-        ]);
-
-        $store = $upgradeRequest->store;
-        AdminAudit::record($request, 'plan_upgrade_rejected', Store::class, $store->id, $store->name, $store->id, $validated['reason']);
-
-        $upgradeRequest->requester?->notify(new StoreActivityNotification(
-            'plan_upgrade_rejected',
-            'Plan Payment Not Accepted',
-            "We couldn't confirm your payment for the {$upgradeRequest->plan->name} plan: {$validated['reason']} You can send a new receipt from Billing.",
-            '/dashboard/billing'
-        ));
+        PlatformPayments::reject($request, $upgradeRequest, $validated['reason']);
 
         return response()->json(['success' => true, 'message' => 'Payment rejected. The owner was notified.']);
     }

@@ -30,6 +30,8 @@ class DatabaseSeeder extends Seeder
             LocalTestSeeder::class,
             // Demo data for payment methods, requirements, staff and the newer appointment/measurement states.
             StaffAndPaymentsDemoSeeder::class,
+            // Sample GCash payments for Admin → Payments (pending / paid / rejected).
+            PlatformPaymentsDemoSeeder::class,
             // Deliberately disabled (2026-09-29) — the owner wants the local
             // demo down to a single shop (Thread & Needle Tailoring / Maria
             // Cruz) only, and had the other 4 shops this seeder creates

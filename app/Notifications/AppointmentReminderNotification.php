@@ -32,7 +32,7 @@ class AppointmentReminderNotification extends Notification implements ShouldQueu
     public function via(object $notifiable): array
     {
         $channels = ['database'];
-        if ($notifiable->email && ! str_starts_with($notifiable->email, 'walkin_')) {
+        if ($notifiable->hasMailableEmail()) {
             $channels[] = 'mail';
         }
         $channels[] = SmsChannel::class;

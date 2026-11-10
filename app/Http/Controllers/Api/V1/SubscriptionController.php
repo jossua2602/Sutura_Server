@@ -41,14 +41,23 @@ class SubscriptionController extends Controller
             return response()->json(['success' => false, 'message' => 'Unauthorized access to store subscriptions.'], 403);
         }
 
-        $subscription = StoreSubscription::with('plan')
+        // scheduledPlan: a downgrade waiting for this period to end (Billing shows it).
+        $subscription = StoreSubscription::with(['plan', 'scheduledPlan:id,name,slug,price_monthly'])
             ->where('store_id', $id)
             ->latest()
             ->first();
 
+        // Staff seats, store-wide (Home → Quick Actions disables "Add Staff" at
+        // the cap). Same rule StaffController::store enforces: the active/trial
+        // plan's max_staff, else the cheapest plan's; -1 = unlimited.
+        $store = Store::find($id);
+        $active = $store?->subscription()->whereIn('status', ['active', 'trial'])->first();
+        $maxStaff = $active?->plan?->max_staff ?? SubscriptionPlan::where('slug', 'basic')->value('max_staff') ?? 1;
+
         return response()->json([
             'success' => true,
             'data' => $subscription,
+            'staff_usage' => ['used' => $store ? $store->staff()->count() : 0, 'max' => (int) $maxStaff],
         ]);
     }
 
@@ -85,6 +94,24 @@ class SubscriptionController extends Controller
                 'code' => 'payment_required',
                 'message' => 'This plan needs a payment. Send it by GCash and upload your receipt to request the upgrade.',
             ], 402);
+        }
+
+        // Stepping down to a free plan from a running paid one keeps what was
+        // paid for: the switch waits for the current period to end.
+        $current = SubscriptionSwitcher::current($store);
+        if (! $user->hasRole('admin') && $current && $current->plan_id !== $plan->id
+            && (float) $current->plan->price_monthly > 0 && $current->ends_at?->isFuture()) {
+            if ($current->scheduled_payment_id) {
+                return response()->json(['success' => false, 'message' => 'You already paid for a plan change that starts when your current plan ends. Contact SUTURA support to change it.'], 422);
+            }
+            SubscriptionSwitcher::schedule($current, $plan, $request->billing_cycle);
+            $on = $current->ends_at->timezone('Asia/Manila')->format('M j, Y');
+
+            return response()->json([
+                'success' => true,
+                'message' => "You stay on {$current->plan->name} until {$on}, then switch to {$plan->name}. You can cancel this from Billing before then.",
+                'data' => $current->fresh()->load('plan', 'scheduledPlan'),
+            ]);
         }
 
         $newSubscription = SubscriptionSwitcher::apply($store, $plan, $request->billing_cycle, $user->id);

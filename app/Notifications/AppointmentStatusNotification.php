@@ -50,7 +50,7 @@ class AppointmentStatusNotification extends Notification implements ShouldQueue
         // In-app always; email too whenever the customer has a real address (walk-ins get a
         // placeholder "walkin_…" login that cannot receive mail).
         $channels = ['database'];
-        if ($notifiable->email && ! str_starts_with($notifiable->email, 'walkin_')) {
+        if ($notifiable->hasMailableEmail()) {
             $channels[] = 'mail';
         }
         // A text only for the moments a customer must act on (the outbox decides whether it waits for review).

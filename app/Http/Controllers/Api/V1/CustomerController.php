@@ -141,7 +141,7 @@ class CustomerController extends Controller
 
         $measurements = $store->measurements()
             ->where('customer_id', $customer->id)
-            ->with('customer:id,name,email')
+            ->with('customer:id,name,email,contact_email')
             ->latest()
             ->get();
 
@@ -192,7 +192,7 @@ class CustomerController extends Controller
 
         $measurements = $store->measurements()
             ->where('customer_id', $customer->id)
-            ->with('customer:id,name,email')
+            ->with('customer:id,name,email,contact_email')
             ->latest()
             ->get();
 
@@ -213,7 +213,7 @@ class CustomerController extends Controller
 
         $measurements = $store->measurements()
             ->where('customer_id', $customer->id)
-            ->with('customer:id,name,email')
+            ->with('customer:id,name,email,contact_email')
             ->latest()
             ->get();
 
@@ -244,81 +244,57 @@ class CustomerController extends Controller
             $digitsPhone = '0'.substr($digitsPhone, 2);
         }
 
+        // The email and number staff type for a walk-in are only where order
+        // updates go — not a login. So:
+        //  - Re-use a record only when it is clearly the same person already in
+        //    THIS shop's customer list: same contact number, same name, and no
+        //    conflicting email. Never link to another shop's customer, or to
+        //    whichever account happens to own the email (a family member sharing
+        //    a Gmail used to get the walk-in's orders in their own account).
+        //  - Otherwise create a new walk-in: a private placeholder login, with the
+        //    typed email saved as the notification email (contact_email).
         $matchedUser = null;
-
-        // 1. Match by email if a real email address is provided
-        if ($rawEmail && ! str_starts_with($rawEmail, 'walkin_')) {
-            $matchedUser = User::where('email', $rawEmail)->first();
-        }
-
-        // 2. Match by contact number if provided
-        if (! $matchedUser && $digitsPhone) {
-            $existingCustomerIds = collect()
+        if ($digitsPhone) {
+            $shopCustomerIds = collect()
                 ->merge($store->customers()->pluck('users.id'))
                 ->merge($store->jobOrders()->pluck('customer_id'))
                 ->merge($store->appointments()->pluck('customer_id'))
                 ->filter()
                 ->unique();
 
-            // First search within the current store's customer base
-            $matchedUser = User::whereIn('id', $existingCustomerIds)
+            $matchedUser = User::whereIn('id', $shopCustomerIds)
+                ->whereRaw('LOWER(TRIM(name)) = ?', [mb_strtolower(trim($validated['name']))])
                 ->where(function ($q) use ($rawPhone, $digitsPhone) {
                     $q->where('phone', $rawPhone)
                         ->orWhereRaw("REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', '') = ?", [$digitsPhone]);
                 })
-                ->first();
-
-            // If not found in current store, check across customer users in database
-            if (! $matchedUser) {
-                $matchedUser = User::where(function ($q) use ($rawPhone, $digitsPhone) {
-                    $q->where('phone', $rawPhone)
-                        ->orWhereRaw("REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', '') = ?", [$digitsPhone]);
-                })->whereDoesntHave('roles', function ($q) {
-                    $q->whereIn('name', ['store_owner', 'staff', 'branch_manager', 'admin']);
-                })->first();
-            }
+                ->whereDoesntHave('roles', fn ($q) => $q->whereIn('name', ['store_owner', 'staff', 'branch_manager', 'admin']))
+                ->get()
+                // A different email on file means a different person sharing the number.
+                ->first(fn (User $u) => ! $rawEmail || ! $u->notificationEmail() || strcasecmp($u->notificationEmail(), $rawEmail) === 0);
         }
 
         if ($matchedUser) {
-            // Guard: ensure matched account is not a staff/store_owner account
-            $isBusinessAccount = $matchedUser->hasRole('store_owner') || $matchedUser->hasRole('staff')
-                || $matchedUser->hasRole('branch_manager') || $matchedUser->hasRole('admin');
-
-            if ($isBusinessAccount) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'This email or phone belongs to a staff or owner account and cannot be added as a customer.',
-                    'errors' => ['email' => ['This account belongs to a staff or owner user.']],
-                ], 422);
-            }
-
             $updates = [];
-            if (! empty($validated['name']) && (empty($matchedUser->name) || Str::startsWith($matchedUser->email, 'walkin_'))) {
-                $updates['name'] = $validated['name'];
-            }
-            if ($rawPhone && empty($matchedUser->phone)) {
-                $updates['phone'] = $rawPhone;
-            }
-            if ($rawEmail && ! str_starts_with($rawEmail, 'walkin_') && Str::startsWith($matchedUser->email, 'walkin_')) {
-                $updates['email'] = $rawEmail;
+            if ($rawEmail && ! $matchedUser->notificationEmail()) {
+                $updates['contact_email'] = $rawEmail;
             }
             if (! empty($validated['suki_tag'])) {
                 $updates['suki_tag'] = $validated['suki_tag'];
             }
-
             if (! empty($updates)) {
                 $matchedUser->update($updates);
             }
 
             $user = $matchedUser;
         } else {
-            $email = $rawEmail ?: ('walkin_'.time().'_'.Str::random(4).self::SUTURA_DOMAIN);
             $user = User::create([
-                'email' => $email,
+                'email' => 'walkin_'.time().'_'.Str::random(6).self::SUTURA_DOMAIN,
+                'contact_email' => $rawEmail,
                 'name' => $validated['name'],
                 'phone' => $rawPhone,
                 'suki_tag' => $validated['suki_tag'] ?? null,
-                'password' => Hash::make(Str::random(16)),
+                'password' => Hash::make(Str::random(32)),
             ]);
         }
 
@@ -363,6 +339,24 @@ class CustomerController extends Controller
             'suki_tag' => 'nullable|string|max:50',
             'notes' => 'nullable|string|max:2000',
         ]);
+
+        // A walk-in (placeholder login) has no login to change: the email field
+        // is only where their order updates go, so it edits contact_email and
+        // may be shared with another person.
+        if (Str::startsWith((string) $customer->email, 'walkin_')) {
+            $customer->update([
+                'name' => $validated['name'],
+                'contact_email' => ! empty($validated['email']) ? trim($validated['email']) : null,
+                'phone' => $validated['phone'] ?? null,
+                'suki_tag' => array_key_exists('suki_tag', $validated) ? $validated['suki_tag'] : $customer->suki_tag,
+            ]);
+            if (array_key_exists('notes', $validated)) {
+                $store->customers()->syncWithoutDetaching([$customer->id => ['notes' => $validated['notes']]]);
+            }
+            $customer->store_notes = $store->customers()->where('user_id', $customer->id)->value('store_customers.notes');
+
+            return response()->json(['success' => true, 'data' => $customer, 'message' => 'Customer updated successfully.']);
+        }
 
         // An empty email on the edit form means "leave it as-is" — the form
         // already pre-fills this field with the customer's real email when

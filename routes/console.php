@@ -19,6 +19,9 @@ Schedule::command('app:notify-overdue-jobs')->dailyAt('08:00');
 
 // REQUIREMENTS.md Phase 5: "Expired subscriptions automatically downgrade
 // store visibility to Hidden until renewed."
+// Downgrades queued for the end of a paid period, switched on time (hourly);
+// expire-subscriptions also runs them first, so a queued change never expires.
+Schedule::command('app:apply-scheduled-plan-changes')->hourly();
 Schedule::command('app:expire-subscriptions')->daily();
 
 // Warns before that happens — "maintain active subscription validity for
@@ -40,3 +43,7 @@ Schedule::command('app:notify-unclaimed-pickups')->dailyAt('08:00');
 // are correctly excluded from the overdue_jobs KPI (paused on purpose, not
 // "late"), but that left them with zero proactive visibility at all.
 Schedule::command('app:notify-jobs-on-hold')->dailyAt('08:00');
+
+// Privacy retention: shop-application selfies are deleted 30 days after the
+// application is approved or rejected (promised in the consent text).
+Schedule::command('app:purge-application-selfies')->dailyAt('03:00');

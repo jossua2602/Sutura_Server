@@ -304,6 +304,7 @@ class CatalogController extends Controller
             $district = $request->string('district');
             $query->whereHas('store.branches', fn ($q) => $q->where('district', $district)->live());
         }
+        \App\Support\Psgc::applyLocationFilter($query, $request, 'store.branches');
 
         match ($request->string('sort_by')->toString()) {
             'price_asc' => $query->orderBy('price'),
@@ -513,8 +514,8 @@ class CatalogController extends Controller
         ];
 
         if ($this->belongsToStore($request, $store)) {
-            $relations['catalogOrders'] = fn ($q) => $q->with('customer:id,name,phone,email')->latest()->limit(50);
-            $relations['jobOrders'] = fn ($q) => $q->with('customer:id,name,phone,email')->latest()->limit(50);
+            $relations['catalogOrders'] = fn ($q) => $q->with('customer:id,name,phone,email,contact_email')->latest()->limit(50);
+            $relations['jobOrders'] = fn ($q) => $q->with('customer:id,name,phone,email,contact_email')->latest()->limit(50);
         }
 
         $catalog->load($relations);

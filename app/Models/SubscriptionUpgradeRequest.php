@@ -4,26 +4,80 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
- * A shop owner's request to move to (or renew) a paid plan, with the GCash
- * proof of payment. Nothing changes on the store until an admin approves it.
+ * One GCash payment a shop sends SUTURA (the admin "Payments" ledger):
+ * a new shop's plan (type new_shop, decided with its application), an
+ * upgrade, a renewal, or a paid downgrade. Nothing changes on the store
+ * until an admin approves it. Statuses: pending | approved ("Paid") | rejected.
  */
 class SubscriptionUpgradeRequest extends Model
 {
+    public const TYPES = ['new_shop', 'upgrade', 'renewal', 'downgrade'];
+
     protected $fillable = [
-        'store_id', 'requested_by', 'plan_id', 'billing_cycle', 'quoted_price',
-        'payment_method', 'payment_reference', 'payment_receipt_path',
-        'status', 'reviewed_by', 'reviewed_at', 'rejection_reason',
+        'store_id', 'type', 'store_application_id', 'requested_by', 'plan_id', 'billing_cycle', 'quoted_price',
+        'amount_sent', 'payment_method', 'payment_reference', 'reference_key', 'sender_name', 'sender_number',
+        'paid_at_reported', 'payment_receipt_path', 'status', 'reviewed_by', 'reviewed_at', 'rejection_reason',
+        'billing_period_start', 'billing_period_end', 'resubmission_of_id',
     ];
 
     // The raw storage path never leaves the server.
-    protected $hidden = ['payment_receipt_path'];
+    protected $hidden = ['payment_receipt_path', 'reference_key'];
 
     protected $casts = [
         'quoted_price' => 'decimal:2',
+        'amount_sent' => 'decimal:2',
         'reviewed_at' => 'datetime',
+        'paid_at_reported' => 'datetime',
+        'billing_period_start' => 'datetime',
+        'billing_period_end' => 'datetime',
     ];
+
+    /** "1234 5678 9" → "123456789": how references are compared. */
+    public static function referenceKey(?string $reference): ?string
+    {
+        $key = strtoupper(preg_replace('/\s+/', '', (string) $reference));
+
+        return $key === '' ? null : $key;
+    }
+
+    /** Is this GCash reference already on another pending or paid payment? */
+    public static function referenceInUse(?string $key, ?int $exceptId = null): bool
+    {
+        return $key !== null && self::where('reference_key', $key)
+            ->whereIn('status', ['pending', 'approved'])
+            ->when($exceptId, fn ($q) => $q->where('id', '!=', $exceptId))
+            ->exists();
+    }
+
+    /**
+     * Things the admin should double-check (never blocks): the amount sent
+     * isn't the plan price, the reference was used on another payment, or the
+     * reported payment time is over 7 days before sending / in the future.
+     *
+     * @return array<int, array{code: string, message: string}>
+     */
+    public function warnings(): array
+    {
+        $out = [];
+        if ($this->amount_sent !== null && abs((float) $this->amount_sent - (float) $this->quoted_price) > 0.009) {
+            $out[] = ['code' => 'amount', 'message' => 'Amount sent (₱'.number_format((float) $this->amount_sent, 2).') is not the plan price (₱'.number_format((float) $this->quoted_price, 2).').'];
+        }
+        if ($this->reference_key && self::where('reference_key', $this->reference_key)->where('id', '!=', $this->id)->exists()) {
+            $out[] = ['code' => 'duplicate', 'message' => 'This GCash reference number was also used on another payment.'];
+        }
+        if ($this->paid_at_reported && $this->created_at) {
+            if ($this->paid_at_reported->lt($this->created_at->copy()->subDays(7))) {
+                $out[] = ['code' => 'old', 'message' => 'The payment date is more than 7 days before it was sent.'];
+            } elseif ($this->paid_at_reported->gt($this->created_at->copy()->addHour())) {
+                $out[] = ['code' => 'future', 'message' => 'The payment date is after the time it was sent.'];
+            }
+        }
+
+        return $out;
+    }
 
     public function store(): BelongsTo
     {
@@ -43,5 +97,21 @@ class SubscriptionUpgradeRequest extends Model
     public function reviewer(): BelongsTo
     {
         return $this->belongsTo(User::class, 'reviewed_by');
+    }
+
+    public function application(): BelongsTo
+    {
+        return $this->belongsTo(StoreApplication::class, 'store_application_id');
+    }
+
+    public function logs(): HasMany
+    {
+        return $this->hasMany(PaymentLog::class, 'payment_id')->orderBy('created_at')->orderBy('id');
+    }
+
+    /** Adds a timeline entry. */
+    public function log(string $action, ?int $userId, ?string $note = null): void
+    {
+        PaymentLog::create(['payment_id' => $this->id, 'user_id' => $userId, 'action' => $action, 'note' => $note, 'created_at' => now()]);
     }
 }

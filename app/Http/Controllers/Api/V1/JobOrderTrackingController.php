@@ -107,6 +107,10 @@ class JobOrderTrackingController extends Controller
                 'is_rush' => (bool) $jobOrder->is_rush,
                 'due_date' => $jobOrder->due_date,
                 'estimated_ready_at' => $jobOrder->estimated_ready_at,
+                // Ready for Fitting: the customer should visit the shop by this date.
+                'fitting_visit_by' => $jobOrder->status === 'ready_for_fitting' ? $jobOrder->fittingVisitBy()?->toDateString() : null,
+                'fitting_visit_days' => $jobOrder->fittingVisitDays(),
+                'fitting_message' => $jobOrder->status === 'ready_for_fitting' ? $jobOrder->fittingMessage() : null,
                 'pipeline' => $this->pipelineFor($jobOrder),
                 'quantity' => $jobOrder->quantity,
                 'total_amount' => (float) $jobOrder->total_amount,
@@ -234,6 +238,10 @@ class JobOrderTrackingController extends Controller
                 'is_rush' => (bool) $jobOrder->is_rush,
                 'due_date' => $jobOrder->due_date,
                 'estimated_ready_at' => $jobOrder->estimated_ready_at,
+                // Ready for Fitting: the customer should visit the shop by this date.
+                'fitting_visit_by' => $jobOrder->status === 'ready_for_fitting' ? $jobOrder->fittingVisitBy()?->toDateString() : null,
+                'fitting_visit_days' => $jobOrder->fittingVisitDays(),
+                'fitting_message' => $jobOrder->status === 'ready_for_fitting' ? $jobOrder->fittingMessage() : null,
                 'pipeline' => $this->pipelineFor($jobOrder),
                 'quantity' => $jobOrder->quantity,
                 'total_amount' => (float) $jobOrder->total_amount,

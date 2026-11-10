@@ -7,7 +7,6 @@ use App\Models\JobOrder;
 use App\Models\Store;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
 
 /**
  * The staff member's Home: the shop-floor numbers the thesis names (Orders in Production,
@@ -35,10 +34,17 @@ class StaffOverviewController extends Controller
             ->whereIn('status', ['pending', 'confirmed', 'in_progress'])
             ->where('scheduled_at', '>=', now()->startOfDay());
 
-        $mine = DB::table('job_order_staff')->where('user_id', $user->id)->pluck('job_order_id')->all();
-        $isMine = fn (JobOrder $j) => (int) $j->assigned_staff_id === (int) $user->id || in_array($j->id, $mine, true);
+        // "My production queue" = orders assigned to this person — the same rule
+        // the order page uses for staff (JobOrderController::show), so every row
+        // here opens. Owners/branch managers see the branch's queue.
+        $isManager = $user->hasRole('store_owner') || $user->hasRole('branch_manager');
+        $assignedToMe = fn ($q) => $q->where(fn ($w) => $w->where('assigned_staff_id', $user->id)->orWhere('assigned_to', $user->id));
+        $isMine = fn (JobOrder $j) => (int) $j->assigned_staff_id === (int) $user->id || (int) $j->assigned_to === (int) $user->id;
 
-        $queue = $jobs()->whereIn('status', array_merge(['design'], self::IN_PRODUCTION, self::QUALITY_CHECK, ['ready_for_fitting']))
+        // Staff also see their assigned orders that haven't started yet or are on hold.
+        $queueStatuses = array_merge($isManager ? [] : ['pending', 'on_hold'], ['design'], self::IN_PRODUCTION, self::QUALITY_CHECK, ['ready_for_fitting']);
+        $queue = $jobs()->when(! $isManager, $assignedToMe)
+            ->whereIn('status', $queueStatuses)
             ->with(['customer:id,name', 'service:id,name', 'catalogItem:id,name'])
             ->orderBy('due_date')->limit(40)->get()
             ->map(fn (JobOrder $j) => [
@@ -60,8 +66,8 @@ class StaffOverviewController extends Controller
             'orders_in_production' => $jobs()->whereIn('status', self::IN_PRODUCTION)->count(),
             'quality_checks_needed' => $jobs()->whereIn('status', self::QUALITY_CHECK)->count(),
             'pending_fittings' => $fittings()->count(),
-            'my_jobs' => $jobs()->whereNotIn('status', ['completed', 'cancelled', 'rejected'])
-                ->where(fn ($q) => $q->where('assigned_staff_id', $user->id)->orWhereIn('job_orders.id', $mine))->count(),
+            // Same "assigned to me" rule as the queue and the order page.
+            'my_jobs' => $assignedToMe($jobs()->whereNotIn('status', ['completed', 'cancelled', 'rejected']))->count(),
             'queue' => $queue,
             'fittings' => $fittings()->with(['customer:id,name', 'jobOrder:id,order_number'])
                 ->orderBy('scheduled_at')->limit(5)->get()

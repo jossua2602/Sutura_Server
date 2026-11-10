@@ -73,6 +73,8 @@ Route::prefix('v1')->group(function () {
     // throttle argument is a key prefix; giving each route its own makes the
     // buckets genuinely independent.
     Route::post('/auth/register', [AuthController::class, 'register'])->middleware('throttle:6,1,register');
+    // Live "already registered?" check for the customer Create Account form.
+    Route::get('/auth/check-email', [AuthController::class, 'checkEmail'])->middleware('throttle:30,1,register-check');
     Route::post('/auth/login', [AuthController::class, 'login'])->middleware('throttle:6,1,login')->name('login');
     Route::post('/auth/forgot-password', [AuthController::class, 'forgotPassword'])->middleware('throttle:6,1,forgot-password');
     Route::post('/auth/reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:6,1,reset-password');
@@ -90,7 +92,20 @@ Route::prefix('v1')->group(function () {
     // "Open a shop" application: creates the owner's login + a pending
     // store + the verification packet. Multipart uploads, so rate-limited.
     Route::post('/store-applications', [StoreApplicationController::class, 'store'])->middleware('throttle:5,1,store-application');
+    // Live "already registered?" check for the Open-a-shop form (email / contact number).
+    Route::get('/store-applications/check-availability', [StoreApplicationController::class, 'checkAvailability'])->middleware('throttle:30,1,store-application-check');
     Route::get('/public/subscription-plans', [StoreApplicationController::class, 'plans']);
+    // The GCash account shops pay SUTURA (set by admins on the Payments page).
+    // Same public data the admin settings show (name, number, QR) — nothing private.
+    Route::get('/public/platform-payment', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'settings'])->middleware('throttle:60,1,platform-payment');
+
+    // Address pickers (PSGC): Province → City/Municipality → District → Barangay.
+    Route::middleware('throttle:120,1,psgc')->prefix('/public/locations')->group(function () {
+        Route::get('/provinces', [\App\Http\Controllers\Api\V1\PsgcController::class, 'provinces']);
+        Route::get('/cities', [\App\Http\Controllers\Api\V1\PsgcController::class, 'cities']);
+        Route::get('/districts', [\App\Http\Controllers\Api\V1\PsgcController::class, 'districts']);
+        Route::get('/barangays', [\App\Http\Controllers\Api\V1\PsgcController::class, 'barangays']);
+    });
 
     // "Request Changes": the owner (not signed in yet) updates the ticked items
     // through the private emailed link. Throttled like the original application.
@@ -183,6 +198,11 @@ Route::prefix('v1')->group(function () {
         Route::get('/my-orders', [JobOrderTrackingController::class, 'myOrders']);
         Route::get('/my-orders/{jobOrder}', [JobOrderTrackingController::class, 'myOrderDetail']);
         Route::post('/my-orders/{jobOrder}/payments', [\App\Http\Controllers\Api\V1\CustomerPaymentController::class, 'store'])->middleware('throttle:sensitive-writes');
+        // "Report a problem" within 3 days of completion: repair or refund.
+        Route::get('/my-orders/{jobOrder}/claims', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'customerIndex']);
+        Route::post('/my-orders/{jobOrder}/claims', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'customerStore'])->middleware('throttle:sensitive-writes');
+        Route::post('/my-orders/{jobOrder}/claims/{claim}/escalate', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'escalate'])->middleware('throttle:sensitive-writes');
+        Route::post('/my-orders/{jobOrder}/claims/{claim}/respond', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'customerRespond'])->middleware('throttle:sensitive-writes');
         Route::get('/my-appointments', [AppointmentController::class, 'myAppointments']);
         Route::get('/my-appointments/{appointment}', [AppointmentController::class, 'myAppointmentDetail']);
         // Self-service cancel — distinct from the owner/manager destroy()
@@ -248,9 +268,17 @@ Route::prefix('v1')->group(function () {
                 // Per-piece completion on a bulk/team order's roster — same
                 // "staff at the workbench" reasoning as progress photos above.
                 Route::post('/jobs/{jobOrder}/roster/{index}/toggle', [JobOrderController::class, 'toggleRosterItem'])->whereNumber('index');
+                // After-sale claims: anyone at the counter can see them and file one for a walk-in;
+                // deciding (accept/decline/refund) is owner/manager-only, below.
+                Route::get('/jobs/{jobOrder}/claims', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'shopIndex']);
+                Route::post('/jobs/{jobOrder}/claims', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'shopStore'])->middleware('throttle:sensitive-writes');
+                Route::post('/claims/upload', [FileUploadController::class, 'store'])->middleware('throttle:uploads');
 
                 // Appointments — read + status transitions (role enforcement inside controller)
                 Route::get('/appointments', [AppointmentController::class, 'index']);
+                // Staff book walk-in appointments too (pinned to their own branch in
+                // AppointmentController::store). No payment fields are set here.
+                Route::post('/appointments', [AppointmentController::class, 'store']);
                 Route::put('/appointments/{appointment}', [AppointmentController::class, 'update']);
                 Route::post('/appointments/{appointment}/complete', [AppointmentController::class, 'complete']);
                 // Narrow operational follow-up — Staff may create a scheduled
@@ -331,8 +359,15 @@ Route::prefix('v1')->group(function () {
                 Route::post('/jobs/{jobOrder}/discount', [JobOrderController::class, 'applyDiscount']);
                 Route::post('/jobs/{jobOrder}/payments/{payment}/reject', [JobOrderController::class, 'rejectPayment']);
                 Route::post('/jobs/{jobOrder}/payments/{payment}/verify', [JobOrderController::class, 'verifyPayment']);
+                // Collect Payments → Digital Receipts: non-cash job-order payments to check.
+                Route::get('/job-payments', [JobOrderController::class, 'jobPayments']);
                 Route::post('/jobs/{jobOrder}/reject', [JobOrderController::class, 'rejectOrder']);
                 Route::post('/jobs/{jobOrder}/approve', [JobOrderController::class, 'approveOrder']);
+                Route::post('/claims/{claim}/accept', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'accept'])->middleware('throttle:sensitive-writes');
+                Route::post('/claims/{claim}/decline', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'decline'])->middleware('throttle:sensitive-writes');
+                Route::post('/claims/{claim}/offer-repair', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'offerRepair'])->middleware('throttle:sensitive-writes');
+                Route::post('/claims/{claim}/respond', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'shopRespond'])->middleware('throttle:sensitive-writes');
+                Route::post('/claims/{claim}/refund', [\App\Http\Controllers\Api\V1\OrderClaimController::class, 'refund'])->middleware('throttle:sensitive-writes');
                 Route::put('/jobs/{jobOrder}/payments/{payment}', [JobOrderController::class, 'updatePayment']);
                 Route::post('/jobs/{jobOrder}/notify-customer', [JobOrderController::class, 'notifyCustomer']);
                 Route::post('/jobs/{jobOrderId}/restore', [JobOrderController::class, 'restore'])->whereNumber('jobOrderId');
@@ -344,13 +379,12 @@ Route::prefix('v1')->group(function () {
                 Route::post('/catalog-orders/{order}/discount', [CatalogOrderController::class, 'applyDiscount']);
                 Route::put('/catalog-orders/{order}/verify-payment', [CatalogOrderController::class, 'verifyPayment']);
 
-                // Appointments — create, cancel, and payment verification
+                // Appointments — delete, reject, and payment verification
                 // (owner/manager only). Payment capture/verification is
                 // Owner/Branch-Manager-exclusive under the finalized target
-                // (PAYMENT-WORKFLOW.md Part B) — moved here from the shared
-                // Staff-accessible group above; Staff's role narrows to
+                // (PAYMENT-WORKFLOW.md Part B); Staff's role narrows to
                 // reading the resulting payment_status, never setting it.
-                Route::post('/appointments', [AppointmentController::class, 'store']);
+                // (Creating an appointment moved to the shared group above.)
                 Route::delete('/appointments/{appointment}', [AppointmentController::class, 'destroy']);
                 Route::get('/decision-queue', [\App\Http\Controllers\Api\V1\DecisionQueueController::class, 'show']);
                 Route::post('/appointments/{appointment}/reject', [AppointmentController::class, 'reject']);
@@ -483,8 +517,10 @@ Route::prefix('v1')->group(function () {
             Route::post('/stores/{store}/subscription', [SubscriptionController::class, 'subscribe']);
             // Paid plan changes: GCash receipt → admin approval (see SubscriptionUpgradeRequestController).
             Route::get('/stores/{store}/subscription/upgrade-requests', [SubscriptionUpgradeRequestController::class, 'index']);
-            Route::post('/stores/{store}/subscription/upgrade-requests', [SubscriptionUpgradeRequestController::class, 'store']);
+            Route::post('/stores/{store}/subscription/upgrade-requests', [SubscriptionUpgradeRequestController::class, 'store'])->middleware('throttle:uploads');
             Route::get('/stores/{store}/subscription/upgrade-requests/{upgradeRequest}/receipt', [SubscriptionUpgradeRequestController::class, 'receipt']);
+            // Cancel a free downgrade that waits for the current period to end.
+            Route::delete('/stores/{store}/subscription/scheduled-change', [SubscriptionUpgradeRequestController::class, 'cancelScheduled']);
             Route::put('/stores/{store}', [StoreController::class, 'update']);
         });
 
@@ -509,6 +545,19 @@ Route::prefix('v1')->group(function () {
             Route::get('/upgrade-requests/{upgradeRequest}/receipt', [AdminSubscriptionUpgradeRequestController::class, 'receipt']);
             Route::post('/upgrade-requests/{upgradeRequest}/approve', [AdminSubscriptionUpgradeRequestController::class, 'approve']);
             Route::post('/upgrade-requests/{upgradeRequest}/reject', [AdminSubscriptionUpgradeRequestController::class, 'reject']);
+
+            // Payments: every GCash payment shops send SUTURA (Admin\PlatformPaymentController).
+            Route::get('/payments', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'index']);
+            Route::get('/payments/stats', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'stats']);
+            Route::get('/payments/export', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'export'])->middleware('throttle:10,1,payments-export');
+            Route::get('/payments/{payment}', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'show'])->whereNumber('payment');
+            Route::get('/payments/{payment}/receipt', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'receipt'])->whereNumber('payment');
+            Route::post('/payments/{payment}/approve', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'approve'])->whereNumber('payment')->middleware('throttle:sensitive-writes');
+            Route::post('/payments/{payment}/reject', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'reject'])->whereNumber('payment')->middleware('throttle:sensitive-writes');
+            Route::get('/payment-settings', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'settings']);
+            Route::put('/payment-settings', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'updateSettings']);
+            Route::post('/payment-settings/qr', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'uploadQr'])->middleware('throttle:uploads');
+            Route::delete('/payment-settings/qr', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'deleteQr']);
 
             // Shop application review queue (documents stream from the
             // private disk through this controller only).

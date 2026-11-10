@@ -14,17 +14,28 @@ class RegisterRequest extends FormRequest
         return true;
     }
 
+    /** Trim and collapse spaces in the name before validating. */
+    protected function prepareForValidation(): void
+    {
+        if ($this->has('name')) {
+            $this->merge(['name' => trim(preg_replace('/\s+/u', ' ', (string) $this->input('name')))]);
+        }
+    }
+
     public function messages(): array
     {
         return [
             'email.not_regex' => 'Shop logins can\'t be used for a customer account. Sign up with your personal email.',
+            'name.regex' => 'Names can only contain letters, spaces, hyphens, apostrophes, and periods.',
         ];
     }
 
     public function rules(): array
     {
         return [
-            'name' => ['required', 'string', 'max:191'],
+            // Letters (incl. ñ, á, é…), spaces, hyphens, apostrophes, periods — no
+            // digits or symbols, and at least one letter. Same rule as the shop application.
+            'name' => ['required', 'string', 'max:191', 'regex:'.StoreApplicationRequest::NAME_PATTERN, 'regex:/\p{L}/u'],
             // No `unique:users` here — a guest-booking "shadow" account (no
             // real password yet) may already own this email, and the
             // controller lets that case claim the account instead of

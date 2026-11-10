@@ -96,11 +96,13 @@ class NotificationController extends Controller
 
         // 3. Subscription Upgrades / Payments
         $pendingUpgrades = SubscriptionUpgradeRequest::where('status', 'pending')
+            ->where('type', '!=', 'new_shop') // decided with the shop application
             ->with(['store:id,name', 'plan:id,name'])
             ->latest()
             ->take(15)
             ->get();
 
+        $typeTitles = ['upgrade' => 'Plan Upgrade Payment', 'renewal' => 'Plan Renewal Payment', 'downgrade' => 'Plan Change Payment'];
         foreach ($pendingUpgrades as $upg) {
             $planName = $upg->plan?->name ?? 'Tier';
             $storeName = $upg->store?->name ?? 'Store';
@@ -108,10 +110,10 @@ class NotificationController extends Controller
                 'id' => 'upgrade_' . $upg->id,
                 'type' => 'subscription_upgrade',
                 'category' => 'upgrades',
-                'title' => 'Plan Upgrade Request',
-                'message' => "{$storeName} requested upgrade to {$planName}" . ($upg->billing_cycle ? " ({$upg->billing_cycle})" : ''),
-                'detail' => '₱' . number_format((float) $upg->quoted_price, 2) . ' · GCash receipt waiting for approval',
-                'link' => '/admin/upgrades',
+                'title' => $typeTitles[$upg->type] ?? 'Plan Payment',
+                'message' => "{$storeName} paid for {$planName}" . ($upg->billing_cycle ? " ({$upg->billing_cycle})" : ''),
+                'detail' => '₱' . number_format((float) $upg->quoted_price, 2) . ' · GCash payment waiting for your check',
+                'link' => '/admin/payments?review=' . $upg->id,
                 'action_label' => 'Review Payment',
                 'created_at' => $upg->created_at?->toISOString() ?? now()->toISOString(),
                 'badge' => $planName,
@@ -220,7 +222,8 @@ class NotificationController extends Controller
         $counts = [
             'applications' => Store::where('status', 'pending')->count(),
             'branches' => StoreBranch::where('verification_status', 'pending')->whereHas('store', fn ($q) => $q->where('status', 'approved'))->count(),
-            'upgrades' => SubscriptionUpgradeRequest::where('status', 'pending')->count(),
+            // Payments waiting for an admin (a new shop's payment is decided with its application).
+            'upgrades' => SubscriptionUpgradeRequest::where('status', 'pending')->where('type', '!=', 'new_shop')->count(),
             'apparel' => CustomApparelType::where('status', 'pending')->count(),
             'tickets' => SupportTicket::whereIn('status', ['open', 'in_progress'])->count(),
         ];

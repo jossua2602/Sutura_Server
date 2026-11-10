@@ -17,6 +17,28 @@ use Illuminate\Support\Facades\Password;
 
 class AuthController extends Controller
 {
+    /**
+     * Live check for the customer Create Account form. Same rule register()
+     * enforces: an account that already has a password is taken; a walk-in or
+     * guest placeholder (no password yet) is available, because signing up
+     * claims it. Shop logins can't be used for a customer account.
+     * Rate-limited so it can't be used to probe emails in bulk.
+     */
+    public function checkEmail(Request $request): JsonResponse
+    {
+        $validated = $request->validate(['email' => ['required', 'string', 'email', 'max:191']]);
+        $email = trim($validated['email']);
+
+        $status = 'available';
+        if (preg_match('/@'.preg_quote(\App\Support\ShopLogin::domain(), '/').'$/i', $email)) {
+            $status = 'shop_login';
+        } elseif (User::where('email', $email)->whereNotNull('password_set_at')->exists()) {
+            $status = 'taken';
+        }
+
+        return response()->json(['success' => true, 'data' => ['email' => $status]]);
+    }
+
     public function register(RegisterRequest $request): JsonResponse
     {
         $existing = User::where('email', $request->email)->first();
@@ -49,6 +71,9 @@ class AuthController extends Controller
             $user->update([
                 'name' => $request->name,
                 'email' => $request->email,
+                // Their own sign-up email is now where updates go, not the
+                // (possibly shared) address staff typed for them as a walk-in.
+                'contact_email' => null,
                 'password' => Hash::make($request->password),
                 'password_set_at' => now(),
                 'phone' => $request->phone ?? $user->phone,

@@ -79,6 +79,7 @@ class ServicePackageController extends Controller
             $district = $request->string('district')->toString();
             $query->whereHas('store.branches', fn ($b) => $b->where('district', $district)->live());
         }
+        \App\Support\Psgc::applyLocationFilter($query, $request, 'store.branches');
 
         $packages = $query->latest()->limit(24)->get(['id', 'store_id', 'name', 'description', 'service_category', 'image_url', 'bundle_price'])
             ->each(function (ServicePackage $p) {

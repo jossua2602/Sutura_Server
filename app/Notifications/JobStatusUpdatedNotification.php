@@ -7,6 +7,7 @@ use App\Models\User;
 use Illuminate\Bus\Queueable;
 use App\Notifications\Channels\SmsChannel;
 use App\Services\Sms\SmsTemplates;
+use App\Support\OrderMailBox;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Notifications\Messages\MailMessage;
 use Illuminate\Notifications\Notification;
@@ -43,7 +44,7 @@ class JobStatusUpdatedNotification extends Notification implements ShouldQueue
     public function via(object $notifiable): array
     {
         $channels = ['database'];
-        if ($notifiable->email && ! str_starts_with($notifiable->email, 'walkin_')) {
+        if ($notifiable->hasMailableEmail()) {
             $channels[] = 'mail';
         }
         if (in_array($this->status, ['ready_for_fitting', 'approved', 'production', 'rejected'], true) && ! empty($notifiable->phone)) {
@@ -81,6 +82,12 @@ class JobStatusUpdatedNotification extends Notification implements ShouldQueue
         ];
     }
 
+    /** "Order ORD-0012: " + the shop's Ready-for-Fitting message (Booking Flow Setup). */
+    private function fittingMessage(): string
+    {
+        return 'Order '.$this->jobOrder->order_number.': '.$this->jobOrder->fittingMessage();
+    }
+
     private function messages(): array
     {
         return [
@@ -93,7 +100,7 @@ class JobStatusUpdatedNotification extends Notification implements ShouldQueue
             'mass_cutting_printing' => 'Your order ('.$this->jobOrder->order_number.') has entered mass cutting and printing.',
             'cutting' => 'Your order ('.$this->jobOrder->order_number.') has entered the cutting stage.',
             'sewing' => 'Your order ('.$this->jobOrder->order_number.') is now being sewn and assembled.',
-            'ready_for_fitting' => 'Your order ('.$this->jobOrder->order_number.') is ready for fitting! Please visit the shop for your fitting schedule.',
+            'ready_for_fitting' => $this->fittingMessage(),
             'final_adjustments' => 'Your order ('.$this->jobOrder->order_number.') is undergoing final adjustments after your fitting.',
             'qc_ironing' => 'Your order ('.$this->jobOrder->order_number.') is receiving its final quality check and ironing.',
             'completed' => 'Your order ('.$this->jobOrder->order_number.') is now complete. Thank you for trusting us with your custom tailoring!',
@@ -118,8 +125,9 @@ class JobStatusUpdatedNotification extends Notification implements ShouldQueue
             : "{$frontendUrl}/account/orders/{$this->jobOrder->id}";
 
         $mail = (new MailMessage)
-            ->subject($title.' — '.($store?->name ?? 'SUTURA'))
+            ->subject($title.' — '.$this->jobOrder->order_number.' · '.($store?->name ?? 'SUTURA'))
             ->greeting('Hello '.$notifiable->name.',')
+            ->line(OrderMailBox::make($this->jobOrder->order_number, $this->jobOrder->tracking_code, $store?->name))
             ->line($message);
 
         if ($this->status === 'rejected') {
@@ -131,8 +139,8 @@ class JobStatusUpdatedNotification extends Notification implements ShouldQueue
                 $mail->action('Contact '.$store->name, $storeUrl);
             }
         } elseif ($this->status === 'ready_for_fitting') {
-            $mail->action('View Fitting & Order Status', $trackingUrl);
-            $mail->line('Please visit the shop or contact us to confirm your preferred fitting schedule.');
+            $mail->action('View Order Status', $trackingUrl);
+            $mail->line('No appointment needed — just drop by the shop during opening hours.');
         } else {
             $mail->action('Track Production Progress', $trackingUrl);
         }

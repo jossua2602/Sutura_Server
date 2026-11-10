@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Api\V1;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Store\CreateStoreRequest;
 use App\Http\Requests\Store\UpdateStoreRequest;
-use App\Models\Service;
 use App\Models\Store;
 use App\Models\StoreReview;
 use App\Models\StoreSubscription;
@@ -95,12 +94,15 @@ class StoreController extends Controller
      * HAVING / an ORDER BY expression refer to a SELECT alias. The cosine is clamped to [-1, 1] because
      * Postgres raises an error for ACOS() of a value that rounding pushes just past 1.
      */
-    private static function distanceSql(string $shopIdColumn): string
+    private static function distanceSql(string $shopIdColumn, bool $inDistrict = false): string
     {
+        // $inDistrict: only the shop's branches in the filtered district count (one extra binding),
+        // so "Talomo" measures to the Talomo branch, not to a nearer branch elsewhere.
         return '(SELECT MIN(6371 * ACOS(LEAST(1.0, GREATEST(-1.0, '
             .'COS(RADIANS(?)) * COS(RADIANS(store_branches.latitude)) * COS(RADIANS(store_branches.longitude) - RADIANS(?)) '
             .'+ SIN(RADIANS(?)) * SIN(RADIANS(store_branches.latitude)))))) '
-            .'FROM store_branches WHERE store_branches.store_id = '.$shopIdColumn." AND store_branches.status = 'active' AND store_branches.verification_status = 'verified')";
+            .'FROM store_branches WHERE store_branches.store_id = '.$shopIdColumn." AND store_branches.status = 'active' AND store_branches.verification_status = 'verified'"
+            .($inDistrict ? ' AND store_branches.district = ?' : '').')';
     }
 
     public function publicIndex(Request $request): JsonResponse
@@ -119,12 +121,22 @@ class StoreController extends Controller
 
         if ($request->filled('q')) {
             $search = strtolower((string) $request->string('q'));
-            $query->where(function ($q) use ($search) {
+            // The search with spaces, "&", "." and "-" taken out, so "AA" also
+            // finds "A & A Tailoring" and "A.A. Tailoring".
+            $compact = str_replace([' ', '&', '.', '-'], '', $search);
+            $squash = "REPLACE(REPLACE(REPLACE(REPLACE(LOWER(%s), ' ', ''), '&', ''), '.', ''), '-', '')";
+            $query->where(function ($q) use ($search, $compact, $squash) {
                 $q->whereRaw('LOWER(name) LIKE ?', ['%'.$search.'%'])
+                    ->when($compact !== '', fn ($qq) => $qq->orWhereRaw(sprintf($squash, 'name').' LIKE ?', ['%'.$compact.'%']))
                     ->orWhereRaw('LOWER(specializations) LIKE ?', ['%'.$search.'%'])
                     ->orWhereRaw('LOWER(custom_services) LIKE ?', ['%'.$search.'%'])
-                    // "Ubalde" finds shops in that barangay; "Jasmin" finds the street.
-                    ->orWhereHas('branches', fn ($bq) => $bq->whereRaw('LOWER(barangay) LIKE ?', ['%'.$search.'%'])->orWhereRaw('LOWER(address) LIKE ?', ['%'.$search.'%']))
+                    // A branch's own name ("AA Tailoring II"); "Ubalde" finds shops
+                    // in that barangay; "Jasmin" finds the street.
+                    ->orWhereHas('branches', fn ($bq) => $bq->where(fn ($b) => $b
+                        ->whereRaw('LOWER(name) LIKE ?', ['%'.$search.'%'])
+                        ->when($compact !== '', fn ($bb) => $bb->orWhereRaw(sprintf($squash, 'name').' LIKE ?', ['%'.$compact.'%']))
+                        ->orWhereRaw('LOWER(barangay) LIKE ?', ['%'.$search.'%'])
+                        ->orWhereRaw('LOWER(address) LIKE ?', ['%'.$search.'%'])))
                     ->orWhereHas('services', function ($sq) use ($search) {
                         $sq->whereRaw('LOWER(category) LIKE ?', ['%'.$search.'%'])
                             ->orWhereRaw('LOWER(name) LIKE ?', ['%'.$search.'%']);
@@ -196,6 +208,8 @@ class StoreController extends Controller
                 $bq->where('district', $district)->live();
             });
         }
+        // Province / city / barangay (PSGC codes).
+        \App\Support\Psgc::applyLocationFilter($query, $request, 'branches');
 
         if ($request->boolean('open_now')) {
             // Real-time branch availability, per Objective 3's own wording.
@@ -251,24 +265,46 @@ class StoreController extends Controller
                 });
         }
 
-        if ($request->filled('min_price') || $request->filled('max_price')) {
-            $query->where(function ($q) use ($request) {
-                $q->whereHas('services', function ($sq) use ($request) {
+        // Price range: the shop must offer something IN the range — and when the
+        // customer searched ("uniform"), that something must also match the search,
+        // so "uniform, ₱0–₱500" doesn't list a shop whose only cheap item is a patch.
+        $hasPrice = $request->filled('min_price') || $request->filled('max_price');
+        $searchTerm = $request->filled('q') ? strtolower((string) $request->string('q')) : null;
+        $inPrice = function ($q, string $column) use ($request) {
+            if ($request->filled('min_price')) {
+                $q->where($column, '>=', $request->float('min_price'));
+            }
+            if ($request->filled('max_price')) {
+                $q->where($column, '<=', $request->float('max_price'));
+            }
+        };
+        $itemMatchesSearch = function ($cq) use ($searchTerm) {
+            if ($searchTerm === null) {
+                return;
+            }
+            $cq->where(fn ($ccq) => $ccq->whereRaw('LOWER(name) LIKE ?', ['%'.$searchTerm.'%'])
+                ->orWhereRaw('LOWER(garment_type) LIKE ?', ['%'.$searchTerm.'%'])
+                ->orWhereRaw('LOWER(material) LIKE ?', ['%'.$searchTerm.'%'])
+                ->orWhereRaw('LOWER(description) LIKE ?', ['%'.$searchTerm.'%']));
+        };
+        $serviceMatchesSearch = function ($sq) use ($searchTerm) {
+            if ($searchTerm === null) {
+                return;
+            }
+            $sq->where(fn ($ssq) => $ssq->whereRaw('LOWER(name) LIKE ?', ['%'.$searchTerm.'%'])
+                ->orWhereRaw('LOWER(category) LIKE ?', ['%'.$searchTerm.'%']));
+        };
+
+        if ($hasPrice) {
+            $query->where(function ($q) use ($inPrice, $itemMatchesSearch, $serviceMatchesSearch) {
+                $q->whereHas('services', function ($sq) use ($inPrice, $serviceMatchesSearch) {
                     $sq->where('is_active', true);
-                    if ($request->filled('min_price')) {
-                        $sq->where('base_price', '>=', $request->float('min_price'));
-                    }
-                    if ($request->filled('max_price')) {
-                        $sq->where('base_price', '<=', $request->float('max_price'));
-                    }
-                })->orWhereHas('catalogItems', function ($cq) use ($request) {
+                    $inPrice($sq, 'base_price');
+                    $serviceMatchesSearch($sq);
+                })->orWhereHas('catalogItems', function ($cq) use ($inPrice, $itemMatchesSearch) {
                     $cq->listed();
-                    if ($request->filled('min_price')) {
-                        $cq->where('price', '>=', $request->float('min_price'));
-                    }
-                    if ($request->filled('max_price')) {
-                        $cq->where('price', '<=', $request->float('max_price'));
-                    }
+                    $inPrice($cq, 'price');
+                    $itemMatchesSearch($cq);
                 });
             });
         }
@@ -284,22 +320,24 @@ class StoreController extends Controller
         // capped list on purpose — the same fix pattern already applied to
         // notification badges, Home dashboard alerts, and Job list tabs
         // elsewhere in this codebase.
+        // Counts follow the price range too, so "N designs" matches what the card shows.
         $query->withCount([
-            'catalogItems as catalog_items_count' => fn ($q) => $q->listed(),
-            'services as services_count' => fn ($q) => $q->where('is_active', true),
+            'catalogItems as catalog_items_count' => function ($q) use ($inPrice) {
+                $q->listed();
+                $inPrice($q, 'price');
+            },
+            'services as services_count' => function ($q) use ($inPrice) {
+                $q->where('is_active', true);
+                $inPrice($q, 'base_price');
+            },
         ]);
 
-        if ($request->filled('q')) {
-            $search = strtolower((string) $request->string('q'));
+        if ($searchTerm !== null) {
             $query->withCount([
-                'catalogItems as matching_items_count' => function ($cq) use ($search) {
-                    $cq->listed()
-                        ->where(function ($ccq) use ($search) {
-                            $ccq->whereRaw('LOWER(name) LIKE ?', ['%'.$search.'%'])
-                                ->orWhereRaw('LOWER(garment_type) LIKE ?', ['%'.$search.'%'])
-                                ->orWhereRaw('LOWER(material) LIKE ?', ['%'.$search.'%'])
-                                ->orWhereRaw('LOWER(description) LIKE ?', ['%'.$search.'%']);
-                        });
+                'catalogItems as matching_items_count' => function ($cq) use ($inPrice, $itemMatchesSearch) {
+                    $cq->listed();
+                    $itemMatchesSearch($cq);
+                    $inPrice($cq, 'price');
                 },
             ]);
         }
@@ -318,13 +356,38 @@ class StoreController extends Controller
             // No "stores.*," prefix here — withCount()/withAvg() above already
             // add it implicitly; repeating it caused a "duplicate column
             // 'id'" error once paginate() wrapped this into a COUNT subquery.
-            $distanceSql = self::distanceSql('stores.id');
-            $query->selectRaw("($distanceSql) as distance_km", [$lat, $lng, $lat]);
+            $district = $request->filled('district') ? $request->string('district')->toString() : null;
+            $distanceSql = self::distanceSql('stores.id', $district !== null);
+            $distBindings = $district !== null ? [$lat, $lng, $lat, $district] : [$lat, $lng, $lat];
+            $query->selectRaw("($distanceSql) as distance_km", $distBindings);
 
             if ($request->filled('radius_km')) {
-                $query->whereRaw("$distanceSql <= ?", [$lat, $lng, $lat, $request->float('radius_km')]);
+                $query->whereRaw("$distanceSql <= ?", [...$distBindings, $request->float('radius_km')]);
             }
         }
+
+        // Price sort: the shop's lowest (Low → High) or highest (High → Low) price among
+        // what is shown — listed designs and active services, within the price range.
+        $priceBound = function (string $agg) use ($request) {
+            // ₱0 means "price on request", not "free" — it never counts as the cheapest.
+            $range = ' AND %1$s > 0';
+            $bindings = [];
+            if ($request->filled('min_price')) {
+                $range .= ' AND %1$s >= ?';
+                $bindings[] = $request->float('min_price');
+            }
+            if ($request->filled('max_price')) {
+                $range .= ' AND %1$s <= ?';
+                $bindings[] = $request->float('max_price');
+            }
+            // Same rule as CatalogItem::scopeListed(): active, and any custom apparel type approved.
+            $items = "(SELECT {$agg}(ci.price) FROM catalog_items ci WHERE ci.store_id = stores.id AND ci.is_active = TRUE"
+                ." AND (ci.custom_apparel_type_id IS NULL OR EXISTS (SELECT 1 FROM custom_apparel_types cat WHERE cat.id = ci.custom_apparel_type_id AND cat.status = 'approved'))"
+                .sprintf($range, 'ci.price').')';
+            $services = "(SELECT {$agg}(sv.base_price) FROM services sv WHERE sv.store_id = stores.id AND sv.is_active = TRUE AND sv.deleted_at IS NULL".sprintf($range, 'sv.base_price').')';
+
+            return [$items, $services, [...$bindings, ...$bindings]];
+        };
 
         $sortBy = $request->string('sort_by')->toString();
         if (! $sortBy) {
@@ -351,22 +414,36 @@ class StoreController extends Controller
                 'name_asc' => $query->orderBy('name'),
                 'rating' => $query->orderByDesc('reviews_avg_rating')->orderByDesc('reviews_count'),
                 'distance' => $query->orderBy('distance_km'),
-                'price_asc' => $query->orderBy(
-                    Service::selectRaw('MIN(base_price)')
-                        ->whereColumn('store_id', 'stores.id')
-                        ->where('is_active', true)
-                ),
+                // Shops with no price at all go last either way.
+                'price_asc' => (function () use ($query, $priceBound) {
+                    [$items, $services, $b] = $priceBound('MIN');
+                    $query->orderByRaw("COALESCE(LEAST(COALESCE($items, 999999999), COALESCE($services, 999999999)), 999999999) ASC", $b);
+                })(),
+                'price_desc' => (function () use ($query, $priceBound) {
+                    [$items, $services, $b] = $priceBound('MAX');
+                    $query->orderByRaw("GREATEST(COALESCE($items, -1), COALESCE($services, -1)) DESC", $b);
+                })(),
                 'newest' => $query->orderByDesc('created_at'),
                 default => $query->orderByDesc('is_featured')->orderByDesc('created_at'),
             };
         }
 
         $stores = $query->with([
-            'branches' => fn ($q) => $q->live(),
-            'services' => fn ($q) => $q->where('is_active', true)->withCount('reviews')->withAvg('reviews', 'rating'),
+            // With a district filter, that district's branch comes first — the card shows branches[0].
+            'branches' => function ($q) use ($request) {
+                $q->live();
+                if ($request->filled('district')) {
+                    $q->orderByRaw('CASE WHEN district = ? THEN 0 ELSE 1 END', [$request->string('district')->toString()]);
+                }
+            },
+            'services' => function ($q) use ($inPrice) {
+                $q->where('is_active', true)->withCount('reviews')->withAvg('reviews', 'rating');
+                $inPrice($q, 'base_price');
+            },
             'owner:id,name',
-            'catalogItems' => function ($cq) use ($request) {
+            'catalogItems' => function ($cq) use ($request, $inPrice) {
                 $cq->listed()->with('images');
+                $inPrice($cq, 'price');
                 if ($request->filled('q')) {
                     $search = strtolower((string) $request->string('q'));
                     $cq->orderByRaw('CASE WHEN LOWER(name) LIKE ? OR LOWER(garment_type) LIKE ? OR LOWER(material) LIKE ? OR LOWER(description) LIKE ? OR EXISTS (SELECT 1 FROM services WHERE services.id = catalog_items.service_id AND (LOWER(services.name) LIKE ? OR LOWER(services.category) LIKE ? OR LOWER(services.service_type) LIKE ?)) THEN 0 ELSE 1 END', [

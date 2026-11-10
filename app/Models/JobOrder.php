@@ -26,8 +26,9 @@ class JobOrder extends Model
      * - 'mass_cutting_printing' is the Bulk Order Override: a job with a
      *   Team Roster / Size Sheet (custom_order_data.team_roster) skips
      *   'pattern_making' and goes straight here instead.
-     * - 'ready_for_fitting' auto-creates a Fitting appointment for the
-     *   customer (see JobOrderController@update).
+     * - 'ready_for_fitting' notifies the customer to visit the shop within
+     *   FITTING_VISIT_DAYS (no appointment is created) and counts a fitting
+     *   round on the order (see JobOrderController@update).
      * - 'final_adjustments' is the revert target if a fitting reveals issues
      *   — from there the job either goes back to 'sewing' for rework or
      *   forward to 'qc_ironing' once resolved.
@@ -117,7 +118,38 @@ class JobOrder extends Model
         'reference_images', 'reference_link', 'material_source', 'garment_category',
         'discount_amount', 'rejection_reason', 'cancellation_reason', 'hold_reason',
         'estimated_ready_at', 'customer_material_status',
+        'fitting_ready_at', 'fitting_rounds',
     ];
+
+    /** Default days to come in for a fitting, when the shop hasn't set its own. */
+    public const FITTING_VISIT_DAYS = 7;
+
+    /** Days the customer has to come in once Ready for Fitting (shop setting, Booking Flow Setup). */
+    public function fittingVisitDays(): int
+    {
+        return max(1, (int) ($this->store?->fitting_visit_days ?: self::FITTING_VISIT_DAYS));
+    }
+
+    /** The visit-by date shown to the customer ("within 7 days, by Nov 14"). */
+    public function fittingVisitBy(): ?\Illuminate\Support\Carbon
+    {
+        return $this->fitting_ready_at?->copy()->addDays($this->fittingVisitDays());
+    }
+
+    /** Used when the shop hasn't written its own Ready-for-Fitting message. */
+    public const DEFAULT_FITTING_MESSAGE = 'Your garment is ready for fitting. Please visit our tailoring shop within {days} days (by {date}).';
+
+    /** The shop's Ready-for-Fitting message with {days} and {date} filled in. */
+    public function fittingMessage(): string
+    {
+        $template = trim((string) $this->store?->fitting_message) ?: self::DEFAULT_FITTING_MESSAGE;
+        $by = $this->fittingVisitBy() ?? now()->addDays($this->fittingVisitDays());
+
+        return strtr($template, [
+            '{days}' => (string) $this->fittingVisitDays(),
+            '{date}' => $by->format('M j, Y'),
+        ]);
+    }
 
     protected $casts = [
         'quantity' => 'integer',
@@ -131,6 +163,8 @@ class JobOrder extends Model
         // docs/REPAIR-WORKFLOW.md §6. A real 'datetime' cast here on purpose,
         // unlike due_date above.
         'estimated_ready_at' => 'datetime',
+        'fitting_ready_at' => 'datetime',
+        'fitting_rounds' => 'integer',
         'custom_order_data' => 'array',
         'reference_images' => 'array',
         'is_rush' => 'boolean',

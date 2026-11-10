@@ -56,7 +56,9 @@ class PublicBookingController extends Controller
                 'operating_hours' => $store->operating_hours,
                 'active_special_hours' => $store->active_special_hours,
                 'special_hours' => $store->specialHours()->get(),
-                'branches' => $store->branches()->live()->get(['id', 'slug', 'name', 'address', 'barangay', 'city', 'latitude', 'longitude']),
+                // is_main lets the booking page default to the main branch
+                // when the customer didn't come from a specific one.
+                'branches' => $store->branches()->live()->orderByDesc('is_main')->get(['id', 'slug', 'name', 'address', 'barangay', 'city', 'latitude', 'longitude', 'is_main']),
                 // service_types/min_order_qty/custom_fields let the booking
                 // wizard pick purposes and roster columns from the real
                 // functional taxonomy instead of guessing from the name.

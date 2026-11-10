@@ -10,6 +10,7 @@ use App\Notifications\ShopLoginIssuedNotification;
 use App\Notifications\StoreApplicationChangesRequestedNotification;
 use App\Notifications\StoreApplicationStatusNotification;
 use App\Support\AdminAudit;
+use App\Support\PlatformPayments;
 use App\Support\ShopLogin;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -80,6 +81,8 @@ class StoreApplicationController extends Controller
                 // The checklist the Request Changes dialog shows.
                 'change_items' => collect(StoreApplication::CHANGE_ITEMS)->map(fn ($label, $key) => ['key' => $key, 'label' => $label])->values(),
                 'documents' => $store->application?->documentList() ?? [],
+                // Recommended documents the owner skipped (the admin can ask for them).
+                'missing_documents' => $store->application?->missingRecommended() ?? [],
                 // What the approve form pre-fills; the admin can edit it.
                 'suggested_login' => $login && preg_match(ShopLogin::pattern(), $login)
                     ? $login
@@ -166,7 +169,7 @@ class StoreApplicationController extends Controller
                 $application->update(['reviewed_by' => $request->user()->id, 'reviewed_at' => now()]);
 
                 if ($application->requested_plan_id) {
-                    StoreSubscription::create([
+                    $subscription = StoreSubscription::create([
                         'store_id' => $store->id,
                         'plan_id' => $application->requested_plan_id,
                         'status' => 'active',
@@ -174,6 +177,8 @@ class StoreApplicationController extends Controller
                         'starts_at' => now(),
                         'ends_at' => $application->billing_cycle === 'yearly' ? now()->addYear() : now()->addMonth(),
                     ]);
+                    // Its plan payment (Admin → Payments) is paid along with the approval.
+                    PlatformPayments::decideWithApplication($application->id, 'approved', $request->user()->id, null, $subscription->starts_at, $subscription->ends_at);
                 }
             }
 
@@ -216,6 +221,9 @@ class StoreApplicationController extends Controller
                 'reviewed_by' => $request->user()->id, 'reviewed_at' => now(),
                 'review_state' => null, 'update_token_hash' => null, 'update_token_expires_at' => null,
             ]);
+            if ($store->application) {
+                PlatformPayments::decideWithApplication($store->application->id, 'rejected', $request->user()->id, $validated['reason']);
+            }
             AdminAudit::record($request, 'store_application_rejected', Store::class, $store->id, $store->name, $store->id, $validated['reason']);
         });
 

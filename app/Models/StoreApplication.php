@@ -14,8 +14,18 @@ class StoreApplication extends Model
         'tin' => 'tin_id_path',
         'barangay' => 'brgy_clearance_path',
         'government-id' => 'government_id_path',
+        'selfie' => 'selfie_with_id_path',
         'receipt' => 'payment_receipt_path',
     ];
+
+    /**
+     * Version of the privacy notice + terms the owner agreed to. Bump it when
+     * that wording changes, so each application shows which one it accepted.
+     */
+    public const CONSENT_VERSION = '2026-11-10';
+
+    /** The selfie is deleted this many days after the application is decided. */
+    public const SELFIE_RETENTION_DAYS = 30;
 
     protected $fillable = [
         'user_id', 'store_id', 'first_name', 'middle_name', 'last_name', 'suffix',
@@ -25,7 +35,8 @@ class StoreApplication extends Model
         'business_permit_paths', 'reviewed_by', 'reviewed_at',
         'review_state', 'change_request_items', 'change_request_note', 'change_requested_at', 'change_requested_by',
         'resubmitted_at', 'update_token_hash', 'update_token_expires_at', 'change_history',
-        'previous_documents',
+        'previous_documents', 'selfie_with_id_path', 'selfie_deleted_at',
+        'privacy_consent_at', 'terms_accepted_at', 'consent_version',
     ];
 
     // Raw storage paths never leave the server — admins get documents
@@ -34,7 +45,7 @@ class StoreApplication extends Model
     protected $hidden = [
         'payment_receipt_path', 'landmark_image_path', 'dti_registration_path', 'tin_id_path',
         'brgy_clearance_path', 'government_id_path', 'business_permit_paths', 'update_token_hash',
-        'previous_documents',
+        'previous_documents', 'selfie_with_id_path',
     ];
 
     protected $casts = [
@@ -48,6 +59,9 @@ class StoreApplication extends Model
         'update_token_expires_at' => 'datetime',
         'change_history' => 'array',
         'previous_documents' => 'array',
+        'selfie_deleted_at' => 'datetime',
+        'privacy_consent_at' => 'datetime',
+        'terms_accepted_at' => 'datetime',
     ];
 
     /**
@@ -63,6 +77,7 @@ class StoreApplication extends Model
         'tin' => 'TIN / BIR 2303',
         'barangay' => 'Barangay clearance',
         'government-id' => 'Government ID',
+        'selfie' => 'Selfie with ID',
         'permits' => 'Business permits',
     ];
 
@@ -136,6 +151,20 @@ class StoreApplication extends Model
         }
 
         return $docs;
+    }
+
+    /** Recommended documents the owner skipped, for the admin review ("Not provided"). */
+    public function missingRecommended(): array
+    {
+        $missing = [];
+        if (! $this->tin_id_path) {
+            $missing[] = ['key' => 'tin', 'label' => self::CHANGE_ITEMS['tin']];
+        }
+        if (empty($this->business_permit_paths)) {
+            $missing[] = ['key' => 'permits', 'label' => self::CHANGE_ITEMS['permits']];
+        }
+
+        return $missing;
     }
 
     public function pathFor(string $key): ?string

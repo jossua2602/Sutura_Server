@@ -53,6 +53,10 @@ class UpdateStoreRequest extends FormRequest
             'fitting_fee' => ['nullable', 'numeric'],
             'fitting_limit' => ['nullable', 'integer', 'min:1'],
             'fitting_limit_policy' => ['sometimes', 'in:fee,block'],
+            // Days a customer has to come in once the order is Ready for Fitting.
+            'fitting_visit_days' => ['sometimes', 'integer', 'min:1', 'max:60'],
+            // Ready-for-Fitting message to the customer; {days} and {date} are filled in.
+            'fitting_message' => ['nullable', 'string', 'max:300'],
             'repair_requires_downpayment' => ['sometimes', 'boolean'],
             'specializations' => ['nullable', 'array'],
             // Men/Women/Kids departments + Services categories — the same axes

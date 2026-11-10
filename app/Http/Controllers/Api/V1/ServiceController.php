@@ -81,6 +81,7 @@ class ServiceController extends Controller
                 $bq->where('district', $district)->live();
             });
         }
+        \App\Support\Psgc::applyLocationFilter($query, $request, 'store.branches');
 
         // Same men/women/children axis as CatalogController's own
         // publicShowroom() — see CatalogItem::DEPARTMENTS.
@@ -106,6 +107,10 @@ class ServiceController extends Controller
         }
         if ($request->filled('max_price')) {
             $query->where('base_price', '<=', $request->float('max_price'));
+        }
+        if ($request->filled('min_rating')) {
+            // Same AVG as withAvg() above, repeated: a select alias cannot be used in WHERE/HAVING on Postgres.
+            $query->whereRaw('(SELECT AVG(r.rating) FROM service_reviews r WHERE r.service_id = services.id) >= ?', [$request->float('min_rating')]);
         }
 
         match ($request->string('sort_by')->toString()) {

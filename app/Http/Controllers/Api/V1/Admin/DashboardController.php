@@ -123,7 +123,8 @@ class DashboardController extends Controller
             $subscriptionStatus[$bucket]++;
         });
 
-        $pending = SubscriptionUpgradeRequest::where('status', 'pending');
+        // Waiting for an admin on Payments (a new shop's is decided with its application).
+        $pending = SubscriptionUpgradeRequest::where('status', 'pending')->where('type', '!=', 'new_shop');
 
         return response()->json([
             'success' => true,
