@@ -68,5 +68,31 @@ class AppServiceProvider extends ServiceProvider
 
         // Every outgoing email gets a reference number (subject, footer, header, log).
         Event::listen(MessageSending::class, AddEmailReference::class);
+
+        $this->ensurePublicStorageLink();
+    }
+
+    /**
+     * Uploaded files (logos, catalog photos, receipts) live in storage/app/public and are
+     * served through the public/storage link. A fresh deploy container doesn't have that
+     * link, so every upload 404'd until someone ran `php artisan storage:link` by hand.
+     * Recreate it whenever it's missing (one cheap check per request; never throws).
+     */
+    private function ensurePublicStorageLink(): void
+    {
+        $link = public_path('storage');
+        if (file_exists($link)) {
+            return;
+        }
+        try {
+            // A dangling link (target moved) must be removed before relinking.
+            if (is_link($link)) {
+                @unlink($link);
+            }
+            @symlink(storage_path('app/public'), $link);
+        } catch (\Throwable) {
+            // No permission or no symlink support (e.g. some Windows setups): uploads stay
+            // unreachable, exactly as before — `php artisan storage:link` still fixes it.
+        }
     }
 }
