@@ -22,7 +22,14 @@ class StoreApplication extends Model
      * Version of the privacy notice + terms the owner agreed to. Bump it when
      * that wording changes, so each application shows which one it accepted.
      */
-    public const CONSENT_VERSION = '2026-11-10';
+    /**
+     * Result of the on-device check comparing the selfie's face with the ID photo it holds.
+     * A hint for the review team, never a decision (see the add_face_match migration).
+     */
+    public const FACE_MATCH_RESULTS = ['likely', 'unsure', 'no_match', 'no_id_face', 'not_checked'];
+
+    // Bumped when the privacy notice changes (2026-11-13: on-device face comparison added).
+    public const CONSENT_VERSION = '2026-11-13';
 
     /** The selfie is deleted this many days after the application is decided. */
     public const SELFIE_RETENTION_DAYS = 30;
@@ -35,7 +42,7 @@ class StoreApplication extends Model
         'business_permit_paths', 'reviewed_by', 'reviewed_at',
         'review_state', 'change_request_items', 'change_request_note', 'change_requested_at', 'change_requested_by',
         'resubmitted_at', 'update_token_hash', 'update_token_expires_at', 'change_history',
-        'previous_documents', 'selfie_with_id_path', 'selfie_deleted_at',
+        'previous_documents', 'selfie_with_id_path', 'selfie_deleted_at', 'face_match', 'face_match_distance',
         'privacy_consent_at', 'terms_accepted_at', 'consent_version',
     ];
 
@@ -60,6 +67,7 @@ class StoreApplication extends Model
         'change_history' => 'array',
         'previous_documents' => 'array',
         'selfie_deleted_at' => 'datetime',
+        'face_match_distance' => 'float',
         'privacy_consent_at' => 'datetime',
         'terms_accepted_at' => 'datetime',
     ];

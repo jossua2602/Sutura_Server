@@ -36,6 +36,14 @@ return [
         'redirect' => env('GOOGLE_REDIRECT_URI', rtrim((string) env('APP_URL', 'http://127.0.0.1:8000'), '/').'/api/v1/auth/google/callback'),
     ],
 
+    // Online GCash for plan payments (App\Services\Xendit). Test keys (xnd_development_…)
+    // simulate payments; live keys (xnd_production_…) move real money. No code change between them.
+    'xendit' => [
+        'secret_key' => env('XENDIT_SECRET_KEY'),
+        'callback_token' => env('XENDIT_CALLBACK_TOKEN'),
+        'base_url' => env('XENDIT_BASE_URL', 'https://api.xendit.co'),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

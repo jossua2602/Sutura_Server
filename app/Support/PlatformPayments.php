@@ -3,6 +3,7 @@
 namespace App\Support;
 
 use App\Models\Store;
+use App\Models\SubscriptionPlan;
 use App\Models\SubscriptionUpgradeRequest;
 use App\Notifications\StoreActivityNotification;
 use Illuminate\Http\Request;
@@ -20,6 +21,9 @@ use Illuminate\Validation\ValidationException;
  *  - renewal  → the same plan is extended from its current end date
  *  - downgrade→ the cheaper plan is queued for when the current period ends
  *  - new_shop → decided with the shop application, not here
+ *
+ * A GCash payment made online (channel "online") is confirmed by the gateway and
+ * approved automatically (approveOnline); a receipt upload waits for an admin.
  */
 class PlatformPayments
 {
@@ -27,13 +31,42 @@ class PlatformPayments
     {
         $adminId = $request->user()->id;
 
-        return DB::transaction(function () use ($request, $payment, $adminId, $checklistNote) {
+        return self::settle($payment, $adminId, $checklistNote, function (Store $store, SubscriptionPlan $plan, SubscriptionUpgradeRequest $payment) use ($request) {
+            AdminAudit::record($request, 'platform_payment_approved', Store::class, $store->id, $store->name.' → '.$plan->name.' (₱'.number_format((float) $payment->quoted_price, 2).')', $store->id);
+        });
+    }
+
+    /**
+     * A plan payment confirmed by the GCash checkout: the plan changes right away, no admin
+     * needed (the money is already confirmed). If the shop no longer fits the plan (staff or
+     * branches added since), it stays pending for an admin to sort out (approve or refund).
+     */
+    public static function approveOnline(Request $request, SubscriptionUpgradeRequest $payment): ?string
+    {
+        try {
+            return self::settle($payment, null, 'Paid with GCash — confirmed automatically.', function (Store $store, SubscriptionPlan $plan, SubscriptionUpgradeRequest $payment) use ($request) {
+                AdminAudit::record($request, 'platform_payment_paid_online', Store::class, $store->id, $store->name.' → '.$plan->name.' (₱'.number_format((float) $payment->quoted_price, 2).')', $store->id, null, null, true);
+            });
+        } catch (ValidationException $e) {
+            $payment->log('needs_review', null, 'Paid with GCash, but the plan could not start: '.collect($e->errors())->flatten()->first().' An admin needs to approve or refund it.');
+
+            return null;
+        }
+    }
+
+    /** Pending → paid, and the plan change it pays for. $adminId null = confirmed by the gateway. */
+    private static function settle(SubscriptionUpgradeRequest $payment, ?int $adminId, ?string $note, callable $audit): string
+    {
+        return DB::transaction(function () use ($payment, $adminId, $note, $audit) {
             $payment = SubscriptionUpgradeRequest::whereKey($payment->id)->lockForUpdate()->firstOrFail();
             if ($payment->status !== 'pending') {
                 throw ValidationException::withMessages(['payment' => 'This payment has already been reviewed.']);
             }
             if ($payment->type === 'new_shop') {
                 throw ValidationException::withMessages(['payment' => 'A new shop’s payment is decided with its application.']);
+            }
+            if ($payment->channel === 'online' && $payment->gateway_status !== 'paid') {
+                throw ValidationException::withMessages(['payment' => 'This GCash payment has not been completed yet.']);
             }
 
             $store = $payment->store;
@@ -72,9 +105,9 @@ class PlatformPayments
                 'reviewed_at' => now(),
                 'rejection_reason' => null,
             ])->save();
-            $payment->log('approved', $adminId, $checklistNote);
+            $payment->log('approved', $adminId, $note);
 
-            AdminAudit::record($request, 'platform_payment_approved', Store::class, $store->id, $store->name.' → '.$plan->name.' (₱'.number_format((float) $payment->quoted_price, 2).')', $store->id);
+            $audit($store, $plan, $payment);
 
             $payment->requester?->notify(new StoreActivityNotification('plan_upgrade_approved', 'Payment Confirmed', $ownerMessage, '/dashboard/billing'));
 

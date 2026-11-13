@@ -18,6 +18,7 @@ class SubscriptionUpgradeRequestController extends Controller
         $status = $request->input('status', 'pending');
 
         $page = SubscriptionUpgradeRequest::query()
+            ->inLedger()
             ->with(['store:id,name,slug', 'plan:id,name', 'requester:id,name,email,contact_email', 'reviewer:id,name'])
             ->where('status', $status)
             ->orderBy('created_at', $status === 'pending' ? 'asc' : 'desc')
@@ -26,7 +27,7 @@ class SubscriptionUpgradeRequestController extends Controller
         return response()->json([
             'success' => true,
             'data' => $page->items(),
-            'counts' => SubscriptionUpgradeRequest::query()->selectRaw('status, COUNT(*) as total')->groupBy('status')->pluck('total', 'status'),
+            'counts' => SubscriptionUpgradeRequest::query()->inLedger()->selectRaw('status, COUNT(*) as total')->groupBy('status')->pluck('total', 'status'),
             'meta' => ['current_page' => $page->currentPage(), 'last_page' => $page->lastPage(), 'total' => $page->total()],
         ]);
     }

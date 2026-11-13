@@ -106,6 +106,9 @@ class StoreApplicationRequest extends FormRequest
             'government_id_type' => ['required', 'string', 'max:100'],
             // Live selfie holding the ID (camera capture, checked by the review team).
             'selfie_with_id' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            // On-device face comparison (a hint for the review team, never trusted on its own).
+            'face_match' => ['nullable', Rule::in(\App\Models\StoreApplication::FACE_MATCH_RESULTS)],
+            'face_match_distance' => ['nullable', 'numeric', 'between:0,2'],
             'business_permits' => ['nullable', 'array', 'max:5'],
             'business_permits.*' => $doc,
 
@@ -114,7 +117,10 @@ class StoreApplicationRequest extends FormRequest
             'billing_cycle' => ['required', Rule::in(['monthly', 'yearly'])],
             // Plan payments are GCash only; bank transfer was removed.
             'payment_method' => ['required', Rule::in(['gcash'])],
-            'payment_receipt' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            // pay_online: pay with GCash right after submitting (no receipt). Otherwise the
+            // applicant sends the fee to SUTURA's GCash first and attaches the receipt.
+            'pay_online' => ['sometimes', 'boolean'],
+            'payment_receipt' => [$this->boolean('pay_online') ? 'nullable' : 'required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
 
             // Data Privacy Act (RA 10173) consent (Documents step) and the
             // terms agreement (last step). Both must be ticked.

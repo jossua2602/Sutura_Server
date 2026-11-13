@@ -58,7 +58,7 @@ Role enforcement is via `role:` middleware in `routes/api.php`, e.g. `Route::mid
 Don't build these — they were deliberately excluded from the approved thesis scope:
 - Hardware integration (body scanners, RFID) — measurements are always manually entered.
 - Offline mode / background sync.
-- Native payment gateway integration — track payment/deposit status only, don't move money.
+- Payment gateway for **customer → shop** payments (orders, deposits) — those are tracked only (status + proof), SUTURA doesn't move that money. **Exception, approved by the adviser (2026-11-13):** shop → SUTURA **plan payments** can be paid with GCash online through Xendit (`App\Services\Xendit`, `App\Support\OnlinePlanPayments`, webhook `POST /webhooks/xendit`), with admin refunds; the manual GCash receipt upload stays as the backup. Users only ever see "GCash", never the gateway's name.
 - Predictive analytics / AI forecasting.
 - Inventory / material stock / purchase orders.
 - Payroll or utility-cost tracking.

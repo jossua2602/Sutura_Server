@@ -8,7 +8,9 @@ use App\Models\Role;
 use App\Models\Store;
 use App\Models\StoreApplication;
 use App\Models\SubscriptionPlan;
+use App\Models\SubscriptionUpgradeRequest;
 use App\Models\User;
+use App\Support\OnlinePlanPayments;
 use App\Support\Psgc;
 use App\Support\ShopLogin;
 use Illuminate\Http\JsonResponse;
@@ -79,23 +81,94 @@ class StoreApplicationController extends Controller
         $paths = $this->storeDocuments($request);
 
         try {
-            $this->createApplication($request, $paths, $plan);
+            $payment = $this->createApplication($request, $paths, $plan);
         } catch (\Throwable $e) {
             // Don't leave orphaned government IDs on disk for a rolled-back row.
             Storage::disk(self::privateDisk())->delete(collect($paths)->flatten()->filter()->all());
             throw $e;
         }
 
+        // Paying with GCash: open the checkout now. If GCash can't be reached, the application
+        // is still saved and the payment page lets the applicant try again.
+        $online = null;
+        if ($payment->isOnline()) {
+            $checkoutUrl = null;
+            try {
+                $checkoutUrl = OnlinePlanPayments::checkout($payment, '/register/store/payment/'.$payment->gateway_token);
+            } catch (\Throwable $e) {
+                report($e);
+            }
+            $online = ['token' => $payment->gateway_token, 'checkout_url' => $checkoutUrl];
+        }
+
         return response()->json([
             'success' => true,
-            'message' => 'Application submitted. We will email your shop login once it is approved.',
-            'data' => ['contact_email' => $request->email],
+            'message' => $online
+                ? 'Application submitted. Pay with GCash to finish.'
+                : 'Application submitted. We will email your shop login once it is approved.',
+            'data' => ['contact_email' => $request->email, 'payment' => $online],
         ], 201);
     }
 
-    private function createApplication(StoreApplicationRequest $request, array $paths, SubscriptionPlan $plan): void
+    /**
+     * The applicant's payment page (/register/store/payment/{token}): no login exists yet, so the
+     * random token from the checkout link is the key. Re-checks with GCash on every view.
+     */
+    public function paymentStatus(string $token): JsonResponse
     {
-        DB::transaction(function () use ($request, $paths, $plan) {
+        $payment = $this->applicationPayment($token);
+        try {
+            $payment = OnlinePlanPayments::sync($payment);
+        } catch (\Throwable $e) {
+            report($e);
+        }
+
+        return response()->json(['success' => true, 'data' => $this->paymentSummary($payment)]);
+    }
+
+    /** "Pay with GCash" again (link expired, payment cancelled, or GCash was down at submit). */
+    public function paymentCheckout(string $token): JsonResponse
+    {
+        $payment = $this->applicationPayment($token);
+        if ($payment->status !== 'pending' || $payment->store?->status !== 'pending') {
+            return response()->json(['success' => false, 'message' => 'This application has already been reviewed.'], 422);
+        }
+
+        return response()->json(['success' => true, 'data' => [
+            'checkout_url' => OnlinePlanPayments::checkout($payment, '/register/store/payment/'.$payment->gateway_token),
+        ]]);
+    }
+
+    private function applicationPayment(string $token): SubscriptionUpgradeRequest
+    {
+        abort_unless(strlen($token) === 40 && ctype_alnum($token), 404);
+
+        return SubscriptionUpgradeRequest::with(['store:id,name,status', 'plan:id,name'])
+            ->where('gateway_token', $token)->where('type', 'new_shop')->where('channel', 'online')
+            ->firstOrFail();
+    }
+
+    /** Only what the applicant needs on the page: nothing about other people. */
+    private function paymentSummary(SubscriptionUpgradeRequest $payment): array
+    {
+        return [
+            'shop' => $payment->store?->name,
+            'plan' => $payment->plan?->name,
+            'billing_cycle' => $payment->billing_cycle,
+            'amount' => (float) $payment->quoted_price,
+            'paid' => $payment->gateway_status === 'paid',
+            'paid_at' => $payment->gateway_paid_at?->toISOString(),
+            'reference' => $payment->gateway_status === 'paid' ? $payment->payment_reference : null,
+            'application_status' => $payment->store?->status ?? 'pending',
+            'refund_status' => $payment->refund_status,
+            'refund_amount' => $payment->refund_amount !== null ? (float) $payment->refund_amount : null,
+            'can_pay' => $payment->gateway_status !== 'paid' && $payment->status === 'pending' && $payment->store?->status === 'pending',
+        ];
+    }
+
+    private function createApplication(StoreApplicationRequest $request, array $paths, SubscriptionPlan $plan): SubscriptionUpgradeRequest
+    {
+        return DB::transaction(function () use ($request, $paths, $plan) {
             // Structured address (PSGC) → "Street, Barangay, City, District, Province".
             $names = $request->resolvedAddresses['shop'];
             $codes = $request->only(['province_code', 'city_code', 'district_code', 'barangay_code']);
@@ -178,6 +251,8 @@ class StoreApplicationController extends Controller
                 'quoted_price' => $request->billing_cycle === 'yearly' ? $plan->price_yearly : $plan->price_monthly,
                 'payment_method' => $request->payment_method,
                 'government_id_type' => $request->government_id_type,
+                'face_match' => $request->face_match,
+                'face_match_distance' => $request->face_match ? $request->face_match_distance : null,
                 // Proof of what the owner agreed to, and when.
                 'privacy_consent_at' => now(),
                 'terms_accepted_at' => now(),
@@ -186,7 +261,9 @@ class StoreApplicationController extends Controller
             ]);
 
             // The plan payment shows in Admin → Payments (decided with the application).
-            $payment = \App\Models\SubscriptionUpgradeRequest::create([
+            // Paid online, it only appears there once GCash confirms it.
+            $online = $request->boolean('pay_online');
+            $payment = SubscriptionUpgradeRequest::create([
                 'store_id' => $store->id,
                 'type' => 'new_shop',
                 'store_application_id' => $application->id,
@@ -196,8 +273,13 @@ class StoreApplicationController extends Controller
                 'quoted_price' => $application->quoted_price,
                 'payment_method' => $request->payment_method,
                 'payment_receipt_path' => $paths['payment_receipt_path'],
+                'status' => 'pending',
+                'channel' => $online ? 'online' : 'receipt',
+                'gateway_token' => $online ? Str::random(40) : null,
             ]);
-            $payment->log('submitted', $user->id, 'Sent with the shop application.');
+            $payment->log('submitted', $user->id, $online ? 'Sent with the shop application; paying with GCash.' : 'Sent with the shop application.');
+
+            return $payment;
         });
     }
 
@@ -213,7 +295,7 @@ class StoreApplicationController extends Controller
             'brgy_clearance_path' => $put($request->file('brgy_clearance'), 'barangay'),
             'government_id_path' => $put($request->file('government_id'), 'government-id'),
             'selfie_with_id_path' => $put($request->file('selfie_with_id'), 'selfies'),
-            'payment_receipt_path' => $put($request->file('payment_receipt'), 'receipts'),
+            'payment_receipt_path' => $request->hasFile('payment_receipt') ? $put($request->file('payment_receipt'), 'receipts') : null,
             'business_permit_paths' => collect($request->file('business_permits', []))
                 ->map(fn (UploadedFile $file) => $put($file, 'permits'))
                 ->values()

@@ -194,6 +194,11 @@ class StoreApplicationUpdateController extends Controller
                 if (in_array('government-id', $items, true)) {
                     $fields['government_id_type'] = $validated['government_id_type'];
                 }
+                if (in_array('selfie', $items, true)) {
+                    // A new selfie gets its own face check; the old result no longer applies.
+                    $fields['face_match'] = $validated['face_match'] ?? null;
+                    $fields['face_match_distance'] = isset($validated['face_match']) ? ($validated['face_match_distance'] ?? null) : null;
+                }
 
                 $history = $application->change_history ?? [];
                 $history[] = [
@@ -263,7 +268,11 @@ class StoreApplicationUpdateController extends Controller
             $rules['landmark_image'] = $image;
         }
         if (in_array('selfie', $items, true)) {
-            $rules['selfie_with_id'] = $image;
+            $rules += [
+                'selfie_with_id' => $image,
+                'face_match' => ['nullable', Rule::in(StoreApplication::FACE_MATCH_RESULTS)],
+                'face_match_distance' => ['nullable', 'numeric', 'between:0,2'],
+            ];
         }
         foreach (['dti' => 'dti_registration', 'tin' => 'tin_id', 'barangay' => 'brgy_clearance'] as $item => $field) {
             if (in_array($item, $items, true)) {

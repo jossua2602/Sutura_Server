@@ -86,9 +86,10 @@ class DashboardController extends Controller
         // Plan payments the admin approved — the subscription money the
         // platform actually received, dated by the approval, not the request.
         $planPayments = SubscriptionUpgradeRequest::with('plan:id,name')
+            ->inLedger()
             ->where('status', 'approved')
             ->where('reviewed_at', '>=', $start)
-            ->get(['id', 'plan_id', 'billing_cycle', 'quoted_price', 'reviewed_at']);
+            ->get(['id', 'plan_id', 'billing_cycle', 'quoted_price', 'refund_amount', 'refund_status', 'reviewed_at']);
         $paymentsByMonth = $planPayments->groupBy(fn ($p) => $p->reviewed_at->format('Y-m'));
 
         $months = collect(range(0, $monthCount - 1))->map(function (int $i) use ($start, $started, $approvedByMonth, $rejectedByMonth, $paymentsByMonth) {
@@ -101,7 +102,7 @@ class DashboardController extends Controller
                 'approved' => $approvedByMonth->get($key, collect())->count(),
                 'rejected' => $rejectedByMonth->get($key, collect())->count(),
                 'plan_payments' => $paid->count(),
-                'plan_income' => round((float) $paid->sum('quoted_price'), 2),
+                'plan_income' => round((float) $paid->sum(fn ($p) => $p->netAmount()), 2),
             ];
         });
 
@@ -124,7 +125,7 @@ class DashboardController extends Controller
         });
 
         // Waiting for an admin on Payments (a new shop's is decided with its application).
-        $pending = SubscriptionUpgradeRequest::where('status', 'pending')->where('type', '!=', 'new_shop');
+        $pending = SubscriptionUpgradeRequest::inLedger()->where('status', 'pending')->where('type', '!=', 'new_shop');
 
         return response()->json([
             'success' => true,
@@ -134,7 +135,7 @@ class DashboardController extends Controller
                 'months' => $months,
                 'approval_rate' => $approved + $rejected > 0 ? round($approved / ($approved + $rejected) * 100, 1) : null,
                 'subscription_status' => $subscriptionStatus,
-                'plan_income' => round((float) $planPayments->sum('quoted_price'), 2),
+                'plan_income' => round((float) $planPayments->sum(fn ($p) => $p->netAmount()), 2),
                 'plan_payments' => $planPayments->count(),
                 'pending_plan_payments' => (clone $pending)->count(),
                 'pending_plan_income' => round((float) (clone $pending)->sum('quoted_price'), 2),

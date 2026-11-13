@@ -95,7 +95,7 @@ class NotificationController extends Controller
         }
 
         // 3. Subscription Upgrades / Payments
-        $pendingUpgrades = SubscriptionUpgradeRequest::where('status', 'pending')
+        $pendingUpgrades = SubscriptionUpgradeRequest::inLedger()->where('status', 'pending')
             ->where('type', '!=', 'new_shop') // decided with the shop application
             ->with(['store:id,name', 'plan:id,name'])
             ->latest()
@@ -106,18 +106,83 @@ class NotificationController extends Controller
         foreach ($pendingUpgrades as $upg) {
             $planName = $upg->plan?->name ?? 'Tier';
             $storeName = $upg->store?->name ?? 'Store';
+            // Paid with GCash online but the plan couldn't start on its own (e.g. over the staff limit).
+            $online = $upg->isOnline();
             $items->push([
-                'id' => 'upgrade_' . $upg->id,
+                'id' => ($online ? 'gcash_check_' : 'upgrade_') . $upg->id,
                 'type' => 'subscription_upgrade',
                 'category' => 'upgrades',
-                'title' => $typeTitles[$upg->type] ?? 'Plan Payment',
+                'title' => $online ? 'Paid, Needs Your Check' : ($typeTitles[$upg->type] ?? 'Plan Payment'),
                 'message' => "{$storeName} paid for {$planName}" . ($upg->billing_cycle ? " ({$upg->billing_cycle})" : ''),
-                'detail' => '₱' . number_format((float) $upg->quoted_price, 2) . ' · GCash payment waiting for your check',
+                'detail' => '₱' . number_format((float) $upg->quoted_price, 2) . ($online
+                    ? ' · Paid with GCash, but the plan could not start on its own'
+                    : ' · GCash receipt waiting for your check'),
                 'link' => '/admin/payments?review=' . $upg->id,
                 'action_label' => 'Review Payment',
-                'created_at' => $upg->created_at?->toISOString() ?? now()->toISOString(),
+                'created_at' => ($online ? $upg->gateway_paid_at : $upg->created_at)?->toISOString() ?? now()->toISOString(),
                 'badge' => $planName,
+                'severity' => $online ? 'amber' : 'emerald',
+            ]);
+        }
+
+        // 3b. GCash payments made online in the last 14 days (they confirm themselves, so this is
+        // the admin's only heads-up). One still waiting for an admin is already listed above.
+        $gcashPaid = SubscriptionUpgradeRequest::where('channel', 'online')->where('gateway_status', 'paid')
+            ->where('gateway_paid_at', '>=', now()->subDays(14))
+            ->where(fn ($q) => $q->where('status', '!=', 'pending')->orWhere('type', 'new_shop'))
+            ->with(['store:id,name', 'plan:id,name'])
+            ->latest('gateway_paid_at')
+            ->take(15)
+            ->get();
+
+        foreach ($gcashPaid as $paid) {
+            $planName = $paid->plan?->name ?? 'Tier';
+            $storeName = $paid->store?->name ?? 'Store';
+            $newShop = $paid->type === 'new_shop';
+            $items->push([
+                'id' => 'gcash_paid_' . $paid->id,
+                'type' => 'gcash_payment',
+                'category' => 'upgrades',
+                'title' => 'GCash Payment Received',
+                'message' => "{$storeName} paid ₱" . number_format((float) $paid->quoted_price, 2) . " for {$planName}",
+                'detail' => match (true) {
+                    $newShop => 'New shop · paid with GCash',
+                    $paid->status === 'approved' => ucfirst($paid->type) . ' · plan updated automatically',
+                    default => ucfirst($paid->type),
+                },
+                // Always the payment: the application has its own "New Store Application" alert.
+                'link' => '/admin/payments?review=' . $paid->id,
+                'action_label' => 'View Payment',
+                'created_at' => $paid->gateway_paid_at->toISOString(),
+                'badge' => 'GCash',
                 'severity' => 'emerald',
+            ]);
+        }
+
+        // 3c. Refunds that failed (retry them) or are still on their way to the payer.
+        $refunds = SubscriptionUpgradeRequest::whereIn('refund_status', ['failed', 'pending'])
+            ->with(['store:id,name'])
+            ->latest('updated_at')
+            ->take(10)
+            ->get();
+
+        foreach ($refunds as $refund) {
+            $failed = $refund->refund_status === 'failed';
+            $storeName = $refund->store?->name ?? 'Store';
+            $amount = '₱' . number_format((float) $refund->refund_amount, 2);
+            $items->push([
+                // A new id per state change, so a refund that fails after processing shows as unread again.
+                'id' => 'refund_' . $refund->refund_status . '_' . $refund->id . '_' . $refund->updated_at?->timestamp,
+                'type' => 'gcash_refund',
+                'category' => 'upgrades',
+                'title' => $failed ? 'Refund Failed' : 'Refund Processing',
+                'message' => $failed ? "The {$amount} refund to {$storeName} did not go through" : "{$amount} refund to {$storeName} is on its way",
+                'detail' => $failed ? 'Open the payment and try the refund again' : 'GCash is still processing it',
+                'link' => '/admin/payments?review=' . $refund->id,
+                'action_label' => $failed ? 'Retry Refund' : 'Check Refund',
+                'created_at' => $refund->updated_at?->toISOString() ?? now()->toISOString(),
+                'badge' => 'Refund',
+                'severity' => $failed ? 'rose' : 'blue',
             ]);
         }
 
@@ -223,7 +288,7 @@ class NotificationController extends Controller
             'applications' => Store::where('status', 'pending')->count(),
             'branches' => StoreBranch::where('verification_status', 'pending')->whereHas('store', fn ($q) => $q->where('status', 'approved'))->count(),
             // Payments waiting for an admin (a new shop's payment is decided with its application).
-            'upgrades' => SubscriptionUpgradeRequest::where('status', 'pending')->where('type', '!=', 'new_shop')->count(),
+            'upgrades' => SubscriptionUpgradeRequest::inLedger()->where('status', 'pending')->where('type', '!=', 'new_shop')->count(),
             'apparel' => CustomApparelType::where('status', 'pending')->count(),
             'tickets' => SupportTicket::whereIn('status', ['open', 'in_progress'])->count(),
         ];

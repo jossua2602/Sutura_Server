@@ -7,6 +7,7 @@ use App\Models\PlatformSetting;
 use App\Models\StoreSubscription;
 use App\Models\SubscriptionUpgradeRequest;
 use App\Support\AdminAudit;
+use App\Support\OnlinePlanPayments;
 use App\Support\PlatformPayments;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
@@ -18,8 +19,10 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Admin → Payments: every GCash payment shops send SUTURA (new shop plans,
- * upgrades, renewals, downgrades). The admin checks the GCash app, then
- * approves or rejects here; the rules live in App\Support\PlatformPayments.
+ * upgrades, renewals, downgrades). A receipt upload: the admin checks the GCash
+ * app, then approves or rejects here (App\Support\PlatformPayments). Paid with
+ * GCash online: confirmed automatically, and refundable from here
+ * (App\Support\OnlinePlanPayments).
  */
 class PlatformPaymentController extends Controller
 {
@@ -56,20 +59,24 @@ class PlatformPaymentController extends Controller
     public function stats(): JsonResponse
     {
         $monthStart = now(self::TZ)->startOfMonth()->utc();
-        $approved = SubscriptionUpgradeRequest::where('status', 'approved');
-        $rejectedOpen = SubscriptionUpgradeRequest::where('status', 'rejected')
+        $approved = SubscriptionUpgradeRequest::inLedger()->where('status', 'approved');
+        // Completed refunds come off the totals (a refunded rejected application was never counted).
+        $refunded = fn ($q) => (float) (clone $q)->where('refund_status', 'succeeded')->sum('refund_amount');
+        $rejectedOpen = SubscriptionUpgradeRequest::inLedger()->where('status', 'rejected')
             ->where('type', '!=', 'new_shop')
             // Not sent again yet.
             ->whereNotExists(fn ($q) => $q->selectRaw(1)->from('subscription_upgrade_requests as later')
                 ->whereColumn('later.resubmission_of_id', 'subscription_upgrade_requests.id'));
-        $byStatus = SubscriptionUpgradeRequest::selectRaw('status, COUNT(*) as total')->groupBy('status')->pluck('total', 'status');
+        $byStatus = SubscriptionUpgradeRequest::inLedger()->selectRaw('status, COUNT(*) as total')->groupBy('status')->pluck('total', 'status');
+        $thisMonth = (clone $approved)->where('reviewed_at', '>=', $monthStart);
 
         return response()->json(['success' => true, 'data' => [
-            'to_verify' => SubscriptionUpgradeRequest::where('status', 'pending')->where('type', '!=', 'new_shop')->count(),
-            'with_applications' => SubscriptionUpgradeRequest::where('status', 'pending')->where('type', 'new_shop')->count(),
-            'paid_this_month' => (float) (clone $approved)->where('reviewed_at', '>=', $monthStart)->sum('quoted_price'),
-            'paid_this_month_count' => (clone $approved)->where('reviewed_at', '>=', $monthStart)->count(),
-            'total_revenue' => (float) (clone $approved)->sum('quoted_price'),
+            'to_verify' => SubscriptionUpgradeRequest::inLedger()->where('status', 'pending')->where('type', '!=', 'new_shop')->count(),
+            'with_applications' => SubscriptionUpgradeRequest::inLedger()->where('status', 'pending')->where('type', 'new_shop')->count(),
+            'paid_this_month' => (float) (clone $thisMonth)->sum('quoted_price') - $refunded($thisMonth),
+            'paid_this_month_count' => (clone $thisMonth)->count(),
+            'total_revenue' => (float) (clone $approved)->sum('quoted_price') - $refunded($approved),
+            'refunded_total' => (float) SubscriptionUpgradeRequest::where('refund_status', 'succeeded')->sum('refund_amount'),
             'rejected_open' => $rejectedOpen->count(),
             'active_subscriptions' => StoreSubscription::whereIn('status', ['active', 'trial'])
                 ->where(fn ($q) => $q->whereNull('ends_at')->orWhere('ends_at', '>', now()))->count(),
@@ -91,7 +98,7 @@ class PlatformPaymentController extends Controller
                 'id' => $l->id, 'action' => $l->action, 'note' => $l->note, 'created_at' => $l->created_at?->toISOString(),
                 'by' => $l->user?->name,
             ]),
-            'warnings' => $payment->warnings(),
+            'warnings' => $payment->isOnline() ? [] : $payment->warnings(),
             'store_subscription' => $current ? [
                 'plan' => $current->plan?->name, 'status' => $current->status,
                 'ends_at' => $current->ends_at?->toISOString(), 'scheduled_plan' => $current->scheduledPlan?->name,
@@ -112,6 +119,13 @@ class PlatformPaymentController extends Controller
 
     public function approve(Request $request, SubscriptionUpgradeRequest $payment): JsonResponse
     {
+        if ($payment->isOnline()) {
+            // Already confirmed by GCash; this is only for one that couldn't start on its own.
+            $message = PlatformPayments::approve($request, $payment, 'Paid with GCash; approved by an admin.');
+
+            return response()->json(['success' => true, 'message' => $message]);
+        }
+
         // The admin confirms they checked the GCash app (recorded on the timeline).
         $request->validate([
             'checked_reference' => ['accepted'],
@@ -124,8 +138,50 @@ class PlatformPaymentController extends Controller
         return response()->json(['success' => true, 'message' => $message]);
     }
 
+    /**
+     * Sends money back to the payer's GCash (GCash payments made online only), full or
+     * partial. The shop's plan isn't changed by a refund.
+     */
+    public function refund(Request $request, SubscriptionUpgradeRequest $payment): JsonResponse
+    {
+        $validated = $request->validate([
+            'amount' => ['required', 'numeric', 'min:1', 'max:1000000'],
+            'reason_code' => ['required', 'in:CANCELLATION,DUPLICATE,REQUESTED_BY_CUSTOMER,OTHERS'],
+            'reason' => ['required', 'string', 'min:3', 'max:500'],
+        ]);
+
+        $payment = OnlinePlanPayments::refund($request, $payment, (float) $validated['amount'], $validated['reason_code'], trim($validated['reason']));
+
+        return response()->json([
+            'success' => true,
+            'message' => $payment->refund_status === 'succeeded'
+                ? 'Refund sent. The money is back in the payer’s GCash.'
+                : 'Refund sent to GCash. It usually reaches the payer within a few days.',
+        ]);
+    }
+
+    /** "Check with GCash": re-reads a payment or refund that is still processing. */
+    public function sync(SubscriptionUpgradeRequest $payment): JsonResponse
+    {
+        if (! $payment->isOnline()) {
+            return response()->json(['success' => false, 'message' => 'Only GCash payments made online can be checked.'], 422);
+        }
+        try {
+            OnlinePlanPayments::sync($payment);
+        } catch (\Throwable $e) {
+            report($e);
+
+            return response()->json(['success' => false, 'message' => 'GCash could not be reached. Try again in a moment.'], 503);
+        }
+
+        return response()->json(['success' => true, 'message' => 'Checked with GCash.']);
+    }
+
     public function reject(Request $request, SubscriptionUpgradeRequest $payment): JsonResponse
     {
+        if ($payment->isOnline()) {
+            return response()->json(['success' => false, 'message' => 'This was paid with GCash online. Refund it instead.'], 422);
+        }
         $validated = $request->validate(['reason' => ['required', 'string', 'min:3', 'max:500']]);
         PlatformPayments::reject($request, $payment, trim($validated['reason']));
 
@@ -144,16 +200,18 @@ class PlatformPaymentController extends Controller
         return response()->streamDownload(function () use ($query) {
             $out = fopen('php://output', 'w');
             fwrite($out, "\xEF\xBB\xBF"); // Excel reads ₱ / ñ correctly
-            fputcsv($out, ['ID', 'Submitted', 'Type', 'Status', 'Shop', 'Owner', 'Owner email', 'Plan', 'Cycle', 'Amount due', 'Amount sent',
-                'GCash ref no.', 'Sender', 'Sender number', 'Paid at (reported)', 'Period start', 'Period end', 'Reviewed by', 'Reviewed at', 'Reject reason']);
+            fputcsv($out, ['ID', 'Submitted', 'Type', 'Status', 'Method', 'Shop', 'Owner', 'Owner email', 'Plan', 'Cycle', 'Amount due', 'Amount sent',
+                'GCash ref no.', 'Sender', 'Sender number', 'Paid at', 'Period start', 'Period end', 'Reviewed by', 'Reviewed at', 'Reject reason',
+                'Refunded', 'Refund status', 'Refund reason']);
             $date = fn ($d) => $d ? Carbon::parse($d)->timezone(self::TZ)->format('Y-m-d H:i') : '';
             foreach ($query->cursor() as $p) {
                 fputcsv($out, [
                     $p->id, $date($p->created_at), $p->type, $p->status === 'approved' ? 'paid' : $p->status,
-                    $p->store?->name, $p->requester?->name, $p->requester?->contact_email ?? $p->requester?->email,
+                    $p->isOnline() ? 'GCash' : 'GCash · Receipt', $p->store?->name, $p->requester?->name, $p->requester?->contact_email ?? $p->requester?->email,
                     $p->plan?->name, $p->billing_cycle, $p->quoted_price, $p->amount_sent,
                     $p->payment_reference, $p->sender_name, $p->sender_number, $date($p->paid_at_reported),
                     $date($p->billing_period_start), $date($p->billing_period_end), $p->reviewer?->name, $date($p->reviewed_at), $p->rejection_reason,
+                    $p->refund_amount, $p->refund_status, $p->refund_reason,
                 ]);
             }
             fclose($out);
@@ -221,6 +279,8 @@ class PlatformPaymentController extends Controller
             'sort' => ['nullable', 'in:date,amount'],
             'dir' => ['nullable', 'in:asc,desc'],
             'per_page' => ['nullable', 'integer', 'min:5', 'max:50'],
+            'channel' => ['nullable', 'in:online,receipt'],
+            'refunded' => ['nullable', 'boolean'],
         ]);
 
         return [
@@ -228,13 +288,18 @@ class PlatformPaymentController extends Controller
             'type' => $v['type'] ?? null, 'from' => $v['from'] ?? null, 'to' => $v['to'] ?? null,
             'sort' => $v['sort'] ?? 'date', 'dir' => $v['dir'] ?? null,
             'per_page' => (int) ($v['per_page'] ?? 5),
+            'channel' => $v['channel'] ?? null,
+            'refunded' => (bool) ($v['refunded'] ?? false),
         ];
     }
 
     private function filtered(array $f): Builder
     {
         return SubscriptionUpgradeRequest::query()
+            ->inLedger()
             ->when($f['status'], fn ($q, $s) => $q->where('status', $s))
+            ->when($f['channel'], fn ($q, $c) => $q->where('channel', $c))
+            ->when($f['refunded'], fn ($q) => $q->whereNotNull('refund_status'))
             ->when($f['plan_id'], fn ($q, $id) => $q->where('plan_id', $id))
             ->when($f['type'], fn ($q, $t) => $q->where('type', $t))
             ->when($f['from'], fn ($q, $d) => $q->where('created_at', '>=', Carbon::parse($d, self::TZ)->startOfDay()->utc()))
@@ -265,13 +330,21 @@ class PlatformPaymentController extends Controller
             'sender_number' => $p->sender_number,
             'paid_at_reported' => $p->paid_at_reported?->toISOString(),
             'has_receipt' => (bool) $p->payment_receipt_path,
+            // "online" = paid with GCash in SUTURA (confirmed automatically); "receipt" = screenshot upload.
+            'channel' => $p->channel,
+            'gateway_paid_at' => $p->gateway_paid_at?->toISOString(),
+            'refundable' => $p->refundable(),
+            'refund_amount' => $p->refund_amount !== null ? (float) $p->refund_amount : null,
+            'refund_status' => $p->refund_status,
+            'refund_reason' => $p->refund_reason,
+            'refunded_at' => $p->refunded_at?->toISOString(),
             'rejection_reason' => $p->rejection_reason,
             'billing_period_start' => $p->billing_period_start?->toISOString(),
             'billing_period_end' => $p->billing_period_end?->toISOString(),
             'created_at' => $p->created_at?->toISOString(),
             'reviewed_at' => $p->reviewed_at?->toISOString(),
             'resubmission_of_id' => $p->resubmission_of_id,
-            'warning_count' => count($p->warnings()),
+            'warning_count' => $p->isOnline() ? 0 : count($p->warnings()),
             'store' => $p->store ? ['id' => $p->store->id, 'name' => $p->store->name] : null,
             'owner' => $p->requester ? ['name' => $p->requester->name, 'email' => $p->requester->contact_email ?? $p->requester->email, 'phone' => $p->requester->phone ?? null] : null,
             'plan' => $p->plan ? ['id' => $p->plan->id, 'name' => $p->plan->name] : null,

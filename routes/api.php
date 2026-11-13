@@ -94,6 +94,13 @@ Route::prefix('v1')->group(function () {
     Route::post('/store-applications', [StoreApplicationController::class, 'store'])->middleware('throttle:5,1,store-application');
     // Live "already registered?" check for the Open-a-shop form (email / contact number).
     Route::get('/store-applications/check-availability', [StoreApplicationController::class, 'checkAvailability'])->middleware('throttle:30,1,store-application-check');
+    // The applicant's GCash payment page (no login yet; the random token from their link is the key).
+    Route::get('/public/plan-payments/{token}', [StoreApplicationController::class, 'paymentStatus'])->middleware('throttle:30,1,plan-payment-status');
+    Route::post('/public/plan-payments/{token}/checkout', [StoreApplicationController::class, 'paymentCheckout'])->middleware('throttle:6,1,plan-payment-checkout');
+
+    // The payment gateway calling back (GCash paid / expired, refund done). Checked by its
+    // verification token; the status itself is always re-fetched from the gateway.
+    Route::post('/webhooks/xendit', \App\Http\Controllers\Api\V1\GcashWebhookController::class)->middleware('throttle:120,1,gcash-webhook');
     Route::get('/public/subscription-plans', [StoreApplicationController::class, 'plans']);
     // The GCash account shops pay SUTURA (set by admins on the Payments page).
     // Same public data the admin settings show (name, number, QR) — nothing private.
@@ -519,6 +526,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/stores/{store}/subscription/upgrade-requests', [SubscriptionUpgradeRequestController::class, 'index']);
             Route::post('/stores/{store}/subscription/upgrade-requests', [SubscriptionUpgradeRequestController::class, 'store'])->middleware('throttle:uploads');
             Route::get('/stores/{store}/subscription/upgrade-requests/{upgradeRequest}/receipt', [SubscriptionUpgradeRequestController::class, 'receipt']);
+            // Pay with GCash online: the plan changes as soon as GCash confirms it.
+            Route::post('/stores/{store}/subscription/pay-online', [SubscriptionUpgradeRequestController::class, 'payOnline'])->middleware('throttle:sensitive-writes');
+            Route::post('/stores/{store}/subscription/upgrade-requests/{upgradeRequest}/check', [SubscriptionUpgradeRequestController::class, 'checkOnline'])->middleware('throttle:30,1,plan-payment-check');
             // Cancel a free downgrade that waits for the current period to end.
             Route::delete('/stores/{store}/subscription/scheduled-change', [SubscriptionUpgradeRequestController::class, 'cancelScheduled']);
             Route::put('/stores/{store}', [StoreController::class, 'update']);
@@ -554,6 +564,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/payments/{payment}/receipt', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'receipt'])->whereNumber('payment');
             Route::post('/payments/{payment}/approve', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'approve'])->whereNumber('payment')->middleware('throttle:sensitive-writes');
             Route::post('/payments/{payment}/reject', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'reject'])->whereNumber('payment')->middleware('throttle:sensitive-writes');
+            // GCash paid online: send money back, or re-check a payment/refund still processing.
+            Route::post('/payments/{payment}/refund', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'refund'])->whereNumber('payment')->middleware('throttle:sensitive-writes');
+            Route::post('/payments/{payment}/sync', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'sync'])->whereNumber('payment')->middleware('throttle:30,1,payments-sync');
             Route::get('/payment-settings', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'settings']);
             Route::put('/payment-settings', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'updateSettings']);
             Route::post('/payment-settings/qr', [\App\Http\Controllers\Api\V1\Admin\PlatformPaymentController::class, 'uploadQr'])->middleware('throttle:uploads');

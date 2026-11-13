@@ -6,12 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\Store;
 use App\Models\StoreApplication;
 use App\Models\StoreSubscription;
+use App\Models\SubscriptionUpgradeRequest;
 use App\Notifications\ShopLoginIssuedNotification;
 use App\Notifications\StoreApplicationChangesRequestedNotification;
 use App\Notifications\StoreApplicationStatusNotification;
 use App\Support\AdminAudit;
+use App\Support\OnlinePlanPayments;
 use App\Support\PlatformPayments;
 use App\Support\ShopLogin;
+use App\Support\StarterServices;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,6 +23,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 
 /**
@@ -36,11 +40,17 @@ class StoreApplicationController extends Controller
     public function index(Request $request): JsonResponse
     {
         $status = $request->input('status', 'pending');
+        // Pending sorts by when they applied (oldest first: the queue); decided ones by when
+        // they were decided (newest first). ?dir=asc|desc flips it.
+        $dir = in_array($request->input('dir'), ['asc', 'desc'], true)
+            ? $request->input('dir')
+            : ($status === 'pending' ? 'asc' : 'desc');
 
         $query = Store::query()
             ->with(['owner:id,name,email,contact_email', 'application.requestedPlan:id,name'])
             ->where('status', $status)
-            ->orderBy($status === 'pending' ? 'created_at' : 'updated_at', $status === 'pending' ? 'asc' : 'desc');
+            ->orderBy($status === 'pending' ? 'created_at' : 'updated_at', $dir)
+            ->orderBy('id', $dir);
 
         if ($search = trim((string) $request->input('search'))) {
             $term = '%'.strtolower($search).'%';
@@ -88,8 +98,32 @@ class StoreApplicationController extends Controller
                     ? $login
                     : ShopLogin::suggest($store->name, $store->owner_id),
                 'login_domain' => ShopLogin::domain(),
+                'plan_payment' => $this->planPayment($store),
             ],
         ]);
+    }
+
+    /** The application's plan payment: a receipt to check, or GCash paid online (refundable). */
+    private function planPayment(Store $store): ?array
+    {
+        $payment = $store->application
+            ? SubscriptionUpgradeRequest::where('store_application_id', $store->application->id)->where('status', '!=', 'cancelled')->latest('id')->first()
+            : null;
+        if (! $payment) {
+            return null;
+        }
+
+        return [
+            'id' => $payment->id,
+            'channel' => $payment->channel,
+            'amount' => (float) $payment->quoted_price,
+            'paid' => $payment->isOnline() ? $payment->gateway_status === 'paid' : null,
+            'paid_at' => $payment->gateway_paid_at?->toISOString(),
+            'reference' => $payment->payment_reference,
+            'refundable' => $payment->refundable(),
+            'refund_status' => $payment->refund_status,
+            'refund_amount' => $payment->refund_amount !== null ? (float) $payment->refund_amount : null,
+        ];
     }
 
     /**
@@ -113,6 +147,12 @@ class StoreApplicationController extends Controller
     {
         if ($store->status !== 'pending') {
             return response()->json(['success' => false, 'message' => 'This application has already been reviewed.'], 422);
+        }
+
+        // Paying with GCash online: approving marks the plan as paid, so the money must be in.
+        $payment = $store->application ? $this->planPayment($store) : null;
+        if ($payment && $payment['channel'] === 'online' && ! $payment['paid']) {
+            return response()->json(['success' => false, 'message' => 'This shop has not finished paying with GCash yet. Approve it once the payment shows as paid, or reject it.'], 422);
         }
 
         $owner = $store->owner;
@@ -182,6 +222,9 @@ class StoreApplicationController extends Controller
                 }
             }
 
+            // What the shop said it specializes in becomes hidden draft services to price.
+            StarterServices::createFor($store);
+
             AdminAudit::record($request, 'store_application_approved', Store::class, $store->id, $store->name, $store->id);
         });
 
@@ -209,7 +252,7 @@ class StoreApplicationController extends Controller
 
     public function reject(Request $request, Store $store): JsonResponse
     {
-        $validated = $request->validate(['reason' => 'required|string|max:1000']);
+        $validated = $request->validate(['reason' => 'required|string|max:1000', 'refund' => 'sometimes|boolean']);
 
         if ($store->status !== 'pending') {
             return response()->json(['success' => false, 'message' => 'This application has already been reviewed.'], 422);
@@ -229,7 +272,23 @@ class StoreApplicationController extends Controller
 
         $this->notifyOwner($store, 'rejected');
 
-        return response()->json(['success' => true, 'message' => 'Application rejected. The owner has been notified.', 'data' => $store->fresh()]);
+        // A GCash payment made online goes back to the applicant's GCash (full amount).
+        $message = 'Application rejected. The owner has been notified.';
+        $payment = $store->application
+            ? SubscriptionUpgradeRequest::where('store_application_id', $store->application->id)->where('channel', 'online')->latest('id')->first()
+            : null;
+        if ($payment?->refundable() && $request->boolean('refund', true)) {
+            try {
+                $payment = OnlinePlanPayments::refund($request, $payment, (float) ($payment->amount_sent ?? $payment->quoted_price), 'CANCELLATION', 'Shop application rejected.');
+                $message .= $payment->refund_status === 'succeeded'
+                    ? ' Their GCash payment was refunded.'
+                    : ' Their GCash refund is being processed.';
+            } catch (ValidationException $e) {
+                $message .= ' The GCash refund did not go through — try again from Payments.';
+            }
+        }
+
+        return response()->json(['success' => true, 'message' => $message, 'data' => $store->fresh()]);
     }
 
     /**
