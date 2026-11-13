@@ -153,8 +153,9 @@ class SubscriptionSwitcher
             ]);
 
         // Renewing early keeps the days already paid for.
-        $renewing = $previousSubscription && $previousSubscription->plan_id === $plan->id
-            && $previousSubscription->ends_at && $previousSubscription->ends_at->isFuture();
+        $renewing = $previousSubscription && $previousSubscription->ends_at && $previousSubscription->ends_at->isFuture()
+            // A free trial keeps its days whichever plan is paid for: the paid period follows it.
+            && ($previousSubscription->plan_id === $plan->id || $previousSubscription->status === 'trial');
         $base = $renewing ? $previousSubscription->ends_at->copy() : now();
 
         $newSubscription = StoreSubscription::create([

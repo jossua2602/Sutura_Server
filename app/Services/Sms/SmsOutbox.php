@@ -10,9 +10,9 @@ use App\Support\PlanGate;
 use App\Support\SmsText;
 
 /**
- * Every outgoing text is written here first. "review" mode (the default) leaves it as a draft for the shop to check —
- * the number and the wording — before anything is sent; "auto" sends straight away (still through the safety rails in
- * SmsSender); "off" keeps the outbox empty. Texts are a Pro-plan feature.
+ * Every outgoing text is written here first. "auto" (the default since 2026-11-14) sends straight away (still through
+ * the safety rails in SmsSender); "review" leaves it as a draft for the shop to check before anything is sent; "off"
+ * keeps the outbox empty. Texts are a Pro-plan feature.
  */
 class SmsOutbox
 {

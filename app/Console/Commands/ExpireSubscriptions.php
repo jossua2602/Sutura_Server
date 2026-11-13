@@ -26,6 +26,7 @@ class ExpireSubscriptions extends Command
                 if (\App\Support\SubscriptionSwitcher::applyScheduled($subscription)) {
                     return;
                 }
+                $wasTrial = $subscription->status === 'trial';
                 $subscription->update(['status' => 'expired']);
 
                 SubscriptionEvent::create([
@@ -50,7 +51,7 @@ class ExpireSubscriptions extends Command
                     if (! $store->is_hidden) {
                         $updates['is_hidden'] = true;
                         if ($store->owner) {
-                            $store->owner->notify(new SubscriptionExpiredNotification($store));
+                            $store->owner->notify(new SubscriptionExpiredNotification($store, $wasTrial));
                         }
                     }
                     $store->update($updates);

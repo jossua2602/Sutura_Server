@@ -40,7 +40,7 @@ class SmsController extends Controller
         $measure = SmsText::measure($m->body);
 
         return [
-            'id' => $m->id, 'event' => $m->event, 'event_label' => SmsTemplates::EVENTS[$m->event] ?? $m->event, 'status' => $m->status,
+            'id' => $m->id, 'event' => $m->event, 'event_label' => SmsTemplates::EVENTS[$m->event] ?? \App\Services\Sms\PlatformSms::EVENTS[$m->event] ?? $m->event, 'status' => $m->status,
             'customer' => $m->recipient?->name, 'to_number' => $m->to_number, 'raw_number' => $m->raw_number, 'blocked_reason' => $m->blocked_reason,
             'body' => $m->body, 'chars' => $measure['chars'], 'segments' => $measure['segments'], 'is_test' => $m->is_test,
             'error' => $m->error, 'created_at' => $m->created_at, 'sent_at' => $m->sent_at, 'related_type' => $m->related_type, 'related_id' => $m->related_id,

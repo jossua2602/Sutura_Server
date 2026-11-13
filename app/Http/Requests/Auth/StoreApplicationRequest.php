@@ -115,12 +115,14 @@ class StoreApplicationRequest extends FormRequest
             // Plan + payment
             'plan_id' => ['required', Rule::exists('subscription_plans', 'id')->where('is_active', true)],
             'billing_cycle' => ['required', Rule::in(['monthly', 'yearly'])],
+            // free_trial: a 14-day trial of the picked plan instead of paying now (one per shop).
+            'free_trial' => ['sometimes', 'boolean'],
             // Plan payments are GCash only; bank transfer was removed.
-            'payment_method' => ['required', Rule::in(['gcash'])],
+            'payment_method' => [$this->boolean('free_trial') ? 'nullable' : 'required', Rule::in(['gcash'])],
             // pay_online: pay with GCash right after submitting (no receipt). Otherwise the
             // applicant sends the fee to SUTURA's GCash first and attaches the receipt.
             'pay_online' => ['sometimes', 'boolean'],
-            'payment_receipt' => [$this->boolean('pay_online') ? 'nullable' : 'required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            'payment_receipt' => [$this->boolean('pay_online') || $this->boolean('free_trial') ? 'nullable' : 'required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
 
             // Data Privacy Act (RA 10173) consent (Documents step) and the
             // terms agreement (last step). Both must be ticked.

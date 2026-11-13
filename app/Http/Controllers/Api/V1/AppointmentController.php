@@ -754,6 +754,10 @@ class AppointmentController extends Controller
                 $sharedChanged = (array_key_exists('shared_link', $data) && ($data['shared_link'] ?? null) !== $appointment->shared_link)
                     || (array_key_exists('shared_images', $data) && ($data['shared_images'] ?? []) !== ($appointment->shared_images ?? []));
 
+                // Read before saving: after update() getOriginal() already returns the new status,
+                // which made "did the status change?" always false (no confirm notice, email or text).
+                $statusBefore = $appointment->status;
+
                 // Perform update
                 $appointment->update($data);
 
@@ -807,7 +811,7 @@ class AppointmentController extends Controller
                             'url' => '/dashboard/appointments',
                             'extra' => ['appointment_id' => $appointment->id],
                         ]);
-                    } elseif ($newStatus && $newStatus !== $appointment->getOriginal('status')) {
+                    } elseif ($newStatus && $newStatus !== $statusBefore) {
                         $customer->notify(new AppointmentStatusNotification($appointment, $newStatus, null, $request->user()));
                         $this->notifyOwnerOfActivity($request, $store, [
                             'type' => 'appointment_'.$newStatus,

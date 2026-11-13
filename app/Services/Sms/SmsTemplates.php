@@ -40,6 +40,17 @@ class SmsTemplates
 
     private const KINDS = ['consultation' => 'consultation', 'measurement' => 'measurement', 'fitting' => 'fitting', 'alteration' => 'alteration', 'pickup' => 'pick-up'];
 
+    /**
+     * Texts are short and link-free (links get filtered by networks): the full details are in the
+     * email. A walk-in with no real inbox is pointed to the shop instead.
+     */
+    private static function tail(?\App\Models\User $customer): string
+    {
+        return $customer && $customer->hasMailableEmail()
+            ? 'Check your email for the full details.'
+            : 'Visit or contact the shop for details.';
+    }
+
     private static function when(Appointment $a): string
     {
         return $a->scheduled_at ? Carbon::parse($a->scheduled_at)->format('D M j, g:iA') : 'the set time';
@@ -57,12 +68,13 @@ class SmsTemplates
         $kind = self::kind($a);
         $when = self::when($a);
         $key = 'appointment:'.$a->id;
+        $tail = self::tail($a->customer);
 
         return match ($status) {
-            'confirmed' => ['event' => 'appointment_confirmed', 'body' => "{$shop}: your {$kind} on {$when} is CONFIRMED. See you!", 'dedupe' => "{$key}:confirmed:{$when}"],
-            'rejected' => ['event' => 'appointment_rejected', 'body' => "{$shop}: sorry, we can't take your {$kind} on {$when}. Please pick another time in SUTURA.", 'dedupe' => "{$key}:rejected"],
-            'rescheduled' => ['event' => 'appointment_rescheduled', 'body' => "{$shop}: your {$kind} is moved to {$when}. Open SUTURA to confirm or pick another time.", 'dedupe' => "{$key}:rescheduled:{$when}"],
-            'cancelled' => ['event' => 'appointment_cancelled', 'body' => "{$shop}: your {$kind} on {$when} was cancelled. Book a new time anytime in SUTURA.", 'dedupe' => "{$key}:cancelled"],
+            'confirmed' => ['event' => 'appointment_confirmed', 'body' => "{$shop}: Good news! Your {$kind} on {$when} is confirmed. {$tail}", 'dedupe' => "{$key}:confirmed:{$when}"],
+            'rejected' => ['event' => 'appointment_rejected', 'body' => "{$shop}: Sorry, we can't take your {$kind} on {$when}. {$tail}", 'dedupe' => "{$key}:rejected"],
+            'rescheduled' => ['event' => 'appointment_rescheduled', 'body' => "{$shop}: Your {$kind} was moved to {$when}. {$tail}", 'dedupe' => "{$key}:rescheduled:{$when}"],
+            'cancelled' => ['event' => 'appointment_cancelled', 'body' => "{$shop}: Your {$kind} on {$when} was cancelled. {$tail}", 'dedupe' => "{$key}:cancelled"],
             default => null,
         };
     }
@@ -74,7 +86,7 @@ class SmsTemplates
 
         return [
             'event' => 'appointment_reminder',
-            'body' => "{$shop} reminder: your ".self::kind($a).' is tomorrow, '.self::when($a).'. Reply not needed.',
+            'body' => "{$shop}: Reminder, your ".self::kind($a).' is tomorrow, '.self::when($a).'. '.self::tail($a->customer),
             'dedupe' => 'appointment:'.$a->id.':reminder:'.Carbon::parse($a->scheduled_at)->toDateString(),
         ];
     }
@@ -84,37 +96,33 @@ class SmsTemplates
     {
         $shop = SmsText::shopName($job->store?->name);
         $no = SmsText::fit($job->order_number, 12);
-        $frontendUrl = rtrim(env('FRONTEND_URL', 'http://localhost:3000'), '/');
-        $trackUrl = $job->tracking_code ? "{$frontendUrl}/track/{$job->tracking_code}" : '';
+        $tail = self::tail($job->customer);
 
         if ($stage === 'approved' || $stage === 'production') {
             return [
                 'event' => 'order_approved',
-                'body' => "{$shop}: order {$no} is APPROVED! Track live progress: {$trackUrl}",
+                'body' => "{$shop}: Good news! Your order {$no} is approved. {$tail}",
                 'dedupe' => 'job:'.$job->id.':approved',
             ];
         }
         if ($stage === 'rejected') {
-            $reason = $job->rejection_reason ? ' Note: '.SmsText::fit($job->rejection_reason, 40) : '';
             return [
                 'event' => 'order_rejected',
-                'body' => "{$shop}: order {$no} could not be accepted.{$reason} Please contact shop.",
+                'body' => "{$shop}: Sorry, your order {$no} could not be accepted. {$tail}",
                 'dedupe' => 'job:'.$job->id.':rejected',
             ];
         }
         if ($stage === 'ready_for_fitting') {
             return [
                 'event' => 'order_ready_fitting',
-                'body' => "{$shop} ({$no}): ".$job->fittingMessage().' Track: '.$trackUrl,
+                'body' => "{$shop}: Good news! Your order {$no} is ready for fitting. {$tail}",
                 'dedupe' => 'job:'.$job->id.':fitting:'.now()->toDateString(),
             ];
         }
         if ($stage === 'ready_for_pickup') {
-            $owing = (float) $job->balance > 0 ? ' Balance: PHP '.number_format((float) $job->balance, 2).'.' : '';
-
             return [
                 'event' => 'order_ready_pickup',
-                'body' => "{$shop}: order {$no} is ready for PICK-UP.{$owing} Track: {$trackUrl}",
+                'body' => "{$shop}: Good news! Your order {$no} is ready for pick-up. {$tail}",
                 'dedupe' => 'job:'.$job->id.':pickup',
             ];
         }

@@ -18,7 +18,7 @@ class SubscriptionExpiredNotification extends Notification implements ShouldQueu
 
     public Store $store;
 
-    public function __construct(Store $store)
+    public function __construct(Store $store, public bool $wasTrial = false)
     {
         $this->store = $store;
     }
@@ -32,8 +32,10 @@ class SubscriptionExpiredNotification extends Notification implements ShouldQueu
     {
         return [
             'type' => 'subscription_expired',
-            'title' => 'Subscription Expired',
-            'message' => "{$this->store->name}'s subscription has expired and your store is now hidden from customers. Renew to restore visibility.",
+            'title' => $this->wasTrial ? 'Free Trial Ended' : 'Subscription Expired',
+            'message' => $this->wasTrial
+                ? "{$this->store->name}'s free trial has ended, so your shop is paused and hidden from customers. Your records are kept. Choose a plan to open it again."
+                : "{$this->store->name}'s subscription has expired and your store is now hidden from customers. Renew to restore visibility.",
             'action_url' => '/dashboard/billing',
             'store_id' => $this->store->id,
         ];

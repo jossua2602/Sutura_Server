@@ -59,6 +59,29 @@ class SmsSender
                 return self::mark($m, 'failed', ['provider' => 'semaphore', 'error' => 'Provider refused the message: '.substr($res->body(), 0, 300)]);
             }
 
+            if ($driver === 'iprogsms') {
+                // Token in the JSON body, not the URL, so it never lands in access logs.
+                $provider = config('sms.iprogsms.sms_provider');
+                $res = Http::asJson()->acceptJson()->timeout(15)->post(config('sms.iprogsms.endpoint'), array_filter([
+                    'api_token' => config('sms.iprogsms.api_token'),
+                    'phone_number' => ltrim($m->to_number, '+'),   // 639XXXXXXXXX
+                    'message' => $m->body,
+                    'sms_provider' => $provider !== null && $provider !== '' ? (int) $provider : null,
+                ], fn ($v) => $v !== null));
+                $json = is_array($res->json()) ? $res->json() : [];
+                // Their reply carries its own status: a 200 HTTP answer can still be a refusal.
+                if ($res->successful() && (int) ($json['status'] ?? 0) === 200 && ! empty($json['message_id'])) {
+                    return self::mark($m, 'sent', ['is_test' => false, 'provider' => 'iprogsms', 'provider_message_id' => (string) $json['message_id'], 'sent_at' => now(), 'error' => null]);
+                }
+
+                // Their "message" can be a list of errors, not just text: keep it readable either way.
+                $reason = $json['message'] ?? $res->body();
+                $reason = is_string($reason) ? $reason : json_encode($reason, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                Log::warning('IPROG SMS refused a message', ['http' => $res->status(), 'reply' => $json ?: substr($res->body(), 0, 500)]);
+
+                return self::mark($m, 'failed', ['provider' => 'iprogsms', 'error' => 'Provider refused the message (HTTP '.$res->status().'): '.substr((string) $reason, 0, 300)]);
+            }
+
             return self::mark($m, 'failed', ['error' => "Unknown SMS driver \"{$driver}\"."]);
         } catch (\Throwable $e) {
             return self::mark($m, 'failed', ['error' => 'Could not reach the SMS provider: '.$e->getMessage()]);

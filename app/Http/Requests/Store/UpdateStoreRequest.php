@@ -59,9 +59,11 @@ class UpdateStoreRequest extends FormRequest
             'fitting_message' => ['nullable', 'string', 'max:300'],
             'repair_requires_downpayment' => ['sometimes', 'boolean'],
             'specializations' => ['nullable', 'array'],
-            // Men/Women/Kids departments + Services categories — the same axes
-            // the header nav and /search use (see CanonicalTaxonomy).
+            // The 10 standard services (see CanonicalTaxonomy::STORE_SERVICE_TAGS).
             'specializations.*' => ['string', Rule::in(CanonicalTaxonomy::selectableStoreSpecializations())],
+            // The shop's own services ("+ Add Service"), same limits as at registration.
+            'custom_services' => ['nullable', 'array', 'max:5'],
+            'custom_services.*' => ['string', 'min:2', 'max:40', 'distinct:ignore_case'],
             // is_featured is deliberately NOT owner-writable here — it's a
             // Premium-plan perk the system keeps in sync automatically
             // (see SubscriptionController::subscribe() and

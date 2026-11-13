@@ -615,6 +615,7 @@ Route::prefix('v1')->group(function () {
     // Public Catalog & Store Profile
     // Store Discovery — search/filter/map feed (Objectives 3 & 4)
     Route::get('/public/stores', [StoreController::class, 'publicIndex']);
+    Route::get('/public/uniform-types', [StoreController::class, 'publicUniformTypes']);
     // Minimal public profile (name/avatar only) — used when a customer taps
     // another reviewer's name/avatar on a catalog item's Ratings & Reviews
     // page. Own-account viewing bypasses this entirely on the frontend and

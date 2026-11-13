@@ -78,6 +78,19 @@ class StoreApplicationController extends Controller
     public function store(StoreApplicationRequest $request): JsonResponse
     {
         $plan = SubscriptionPlan::findOrFail($request->plan_id);
+
+        // One free trial per shop: not again for a contact number or email that already had one.
+        if ($request->boolean('free_trial') && StoreApplication::where('free_trial', true)
+            ->where(fn ($q) => $q->where('contact_number', $request->contact_number)
+                ->orWhereHas('store', fn ($s) => $s->where('email', $request->email)))
+            ->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => 'A free trial was already used for this contact number or email. Choose a payment option instead.',
+                'errors' => ['free_trial' => ['A free trial was already used for this shop.']],
+            ], 422);
+        }
+
         $paths = $this->storeDocuments($request);
 
         try {
@@ -91,7 +104,7 @@ class StoreApplicationController extends Controller
         // Paying with GCash: open the checkout now. If GCash can't be reached, the application
         // is still saved and the payment page lets the applicant try again.
         $online = null;
-        if ($payment->isOnline()) {
+        if ($payment?->isOnline()) {
             $checkoutUrl = null;
             try {
                 $checkoutUrl = OnlinePlanPayments::checkout($payment, '/register/store/payment/'.$payment->gateway_token);
@@ -105,7 +118,9 @@ class StoreApplicationController extends Controller
             'success' => true,
             'message' => $online
                 ? 'Application submitted. Pay with GCash to finish.'
-                : 'Application submitted. We will email your shop login once it is approved.',
+                : ($request->boolean('free_trial')
+                    ? 'Application submitted. Your '.StoreApplication::FREE_TRIAL_DAYS.'-day free trial starts once it is approved.'
+                    : 'Application submitted. We will email your shop login once it is approved.'),
             'data' => ['contact_email' => $request->email, 'payment' => $online],
         ], 201);
     }
@@ -166,7 +181,8 @@ class StoreApplicationController extends Controller
         ];
     }
 
-    private function createApplication(StoreApplicationRequest $request, array $paths, SubscriptionPlan $plan): SubscriptionUpgradeRequest
+    /** The application, and its plan payment (none for a free trial). */
+    private function createApplication(StoreApplicationRequest $request, array $paths, SubscriptionPlan $plan): ?SubscriptionUpgradeRequest
     {
         return DB::transaction(function () use ($request, $paths, $plan) {
             // Structured address (PSGC) → "Street, Barangay, City, District, Province".
@@ -249,7 +265,8 @@ class StoreApplicationController extends Controller
                 'requested_plan_id' => $plan->id,
                 'billing_cycle' => $request->billing_cycle,
                 'quoted_price' => $request->billing_cycle === 'yearly' ? $plan->price_yearly : $plan->price_monthly,
-                'payment_method' => $request->payment_method,
+                'payment_method' => $request->boolean('free_trial') ? null : $request->payment_method,
+                'free_trial' => $request->boolean('free_trial'),
                 'government_id_type' => $request->government_id_type,
                 'face_match' => $request->face_match,
                 'face_match_distance' => $request->face_match ? $request->face_match_distance : null,
@@ -259,6 +276,11 @@ class StoreApplicationController extends Controller
                 'consent_version' => StoreApplication::CONSENT_VERSION,
                 ...$paths,
             ]);
+
+            // A free trial has nothing to pay yet: the plan starts as a trial when approved.
+            if ($application->free_trial) {
+                return null;
+            }
 
             // The plan payment shows in Admin → Payments (decided with the application).
             // Paid online, it only appears there once GCash confirms it.

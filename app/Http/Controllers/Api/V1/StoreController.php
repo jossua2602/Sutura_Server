@@ -9,6 +9,7 @@ use App\Models\Store;
 use App\Models\StoreReview;
 use App\Models\StoreSubscription;
 use App\Models\SubscriptionPlan;
+use App\Support\CanonicalTaxonomy;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
@@ -105,6 +106,29 @@ class StoreController extends Controller
             .($inDistrict ? ' AND store_branches.district = ?' : '').')';
     }
 
+    /**
+     * The uniform types customers can narrow "Uniform" by: each type with how many listed shops
+     * have an active service of it. Types no shop offers yet are left out.
+     */
+    public function publicUniformTypes(): JsonResponse
+    {
+        $counts = \App\Models\Service::query()
+            ->where('is_active', true)
+            ->where('service_category', 'uniform_production')
+            ->whereIn('service_leaf_type', CanonicalTaxonomy::UNIFORM_TYPES)
+            ->whereHas('store', fn ($q) => $q->where('is_hidden', false)->where('status', 'approved'))
+            ->selectRaw('service_leaf_type, COUNT(DISTINCT store_id) as shops')
+            ->groupBy('service_leaf_type')
+            ->pluck('shops', 'service_leaf_type');
+
+        $data = collect(CanonicalTaxonomy::UNIFORM_TYPES)
+            ->filter(fn ($type) => ($counts[$type] ?? 0) > 0)
+            ->map(fn ($type) => ['value' => $type, 'label' => CanonicalTaxonomy::SERVICE_TYPE_LABELS[$type] ?? $type, 'shops' => (int) $counts[$type]])
+            ->values();
+
+        return response()->json(['success' => true, 'data' => $data]);
+    }
+
     public function publicIndex(Request $request): JsonResponse
     {
         $query = Store::query()
@@ -175,6 +199,13 @@ class StoreController extends Controller
             }
         }
 
+        // Under "Uniform": only shops with an active service of this uniform type (PNP, BFP, school…).
+        if ($request->filled('uniform_type') && in_array($request->input('uniform_type'), CanonicalTaxonomy::UNIFORM_TYPES, true)) {
+            $query->whereHas('services', fn ($sq) => $sq->where('is_active', true)
+                ->where('service_category', 'uniform_production')
+                ->where('service_leaf_type', $request->input('uniform_type')));
+        }
+
         $spec = $request->input('specialization') ?: $request->input('category');
         if ($spec) {
             $query->where(function ($sq) use ($spec) {
@@ -195,7 +226,8 @@ class StoreController extends Controller
                     ->orWhereHas('services', function ($svq) use ($spec) {
                         $svq->where('is_active', true)
                             ->where(function ($ssq) use ($spec) {
-                                $ssq->where('service_category', (string) $spec)
+                                // "Uniform" (a shop tag) = services in the Uniform Production category.
+                                $ssq->where('service_category', $spec === 'uniform' ? 'uniform_production' : (string) $spec)
                                     ->orWhereRaw('LOWER(category) LIKE ?', ['%'.strtolower((string) $spec).'%']);
                             });
                     });

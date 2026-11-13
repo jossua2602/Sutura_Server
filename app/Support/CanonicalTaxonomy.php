@@ -132,8 +132,11 @@ class CanonicalTaxonomy
         'tapering_resizing' => 'Tapering & Resizing', 'sleeve_adjustment' => 'Sleeve Adjustment',
         'zipper_replacement' => 'Zipper Replacement', 'button_fastener_replacement' => 'Button & Fastener Replacement',
         'garment_repair_restoration' => 'Garment Repair & Restoration',
-        'school_uniforms' => 'School Uniforms', 'corporate_uniforms' => 'Corporate Uniforms', 'office_uniforms' => 'Office Uniforms',
-        'medical_uniforms' => 'Medical Uniforms', 'hospitality_uniforms' => 'Hospitality Uniforms', 'institutional_uniforms' => 'Institutional Uniforms',
+        'school_uniforms' => 'School Uniforms', 'office_uniforms' => 'Office / Corporate Uniforms',
+        'medical_uniforms' => 'Medical Uniforms', 'maritime_uniforms' => 'Maritime Uniforms',
+        'police_uniforms' => 'PNP / Police Uniforms', 'military_uniforms' => 'AFP / Military Uniforms',
+        'fire_uniforms' => 'BFP / Fire Uniforms', 'security_uniforms' => 'Security Guard Uniforms',
+        'hospitality_uniforms' => 'Hospitality Uniforms', 'other_uniforms' => 'Other Uniforms',
         'sports_jersey_printing' => 'Sports Jersey Printing', 'full_sublimation' => 'Full Sublimation',
         'teamwear_printing' => 'Teamwear Printing', 'corporate_apparel_printing' => 'Corporate Apparel Printing',
         'custom_apparel_printing' => 'Custom Apparel Printing',
@@ -143,15 +146,13 @@ class CanonicalTaxonomy
     ];
 
     /**
-     * What a store can say it specializes in — the same top-level axes the
-     * header nav uses (Men/Women/Kids departments + each Services category),
-     * so a store's own tags line up with how customers actually browse.
-     * Replaces the old free-floating barong/gown/suit/... list, which didn't
-     * map onto any part of this taxonomy.
+     * The services a shop offers: the 10 standard ones (STORE_SERVICE_TAGS). Men / Women / Kids
+     * were dropped as shop tags on 2026-11-14 (they describe who a shop serves, not a service);
+     * a shop's own extra services live in stores.custom_services.
      */
     public static function storeSpecializations(): array
     {
-        return array_merge(self::DEPARTMENTS, self::STORE_SERVICE_TAGS);
+        return self::STORE_SERVICE_TAGS;
     }
 
     /**
@@ -162,8 +163,18 @@ class CanonicalTaxonomy
      * SERVICE_CATEGORIES, which classifies individual services and packages.
      */
     public const STORE_SERVICE_TAGS = [
-        'custom_tailoring', 'alterations_repairs',
-        'formal', 'casual', 'office', 'school', 'maritime', 'medical', 'sports', 'embroidery',
+        'custom_tailoring', 'alterations_repairs', 'formal', 'casual', 'uniform', 'sports', 'embroidery',
+    ];
+
+    /**
+     * Uniform types (2026-11-14): Office / School / Medical / Maritime were merged into one
+     * "Uniform" service; the kind of uniform is now the service's type (service_leaf_type),
+     * which customers filter by under Uniform.
+     */
+    public const UNIFORM_TYPES = [
+        'school_uniforms', 'office_uniforms', 'medical_uniforms', 'maritime_uniforms',
+        'police_uniforms', 'military_uniforms', 'fire_uniforms', 'security_uniforms',
+        'hospitality_uniforms', 'other_uniforms',
     ];
 
     /**
@@ -171,6 +182,7 @@ class CanonicalTaxonomy
      * Accepted on save so those shops can still update their profile.
      */
     public const LEGACY_STORE_SERVICE_TAGS = [
+        'office', 'school', 'maritime', 'medical',
         'uniform_production', 'printing_sublimation', 'custom_costume_creation', 'others',
     ];
 
@@ -182,7 +194,7 @@ class CanonicalTaxonomy
      * classifies services for search and job-order handling.
      */
     public const SERVICE_SHOWCASE_CATEGORIES = [
-        'uniform', 'casual', 'office', 'formal', 'sports', 'school', 'medical', 'maritime', 'embroidery',
+        'uniform', 'casual', 'formal', 'sports', 'embroidery',
         'custom_tailoring', 'alterations_repairs',
     ];
 
@@ -307,10 +319,7 @@ class CanonicalTaxonomy
                 'hemming_length_adjustment', 'waist_seat_adjustment', 'tapering_resizing',
                 'sleeve_adjustment', 'zipper_replacement', 'button_fastener_replacement', 'garment_repair_restoration',
             ],
-            'uniform_production' => [
-                'school_uniforms', 'corporate_uniforms', 'office_uniforms',
-                'medical_uniforms', 'hospitality_uniforms', 'institutional_uniforms',
-            ],
+            'uniform_production' => self::UNIFORM_TYPES,
             'printing_sublimation' => [
                 'sports_jersey_printing', 'full_sublimation', 'teamwear_printing',
                 'corporate_apparel_printing', 'custom_apparel_printing',

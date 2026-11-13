@@ -26,6 +26,9 @@ class StoreApplication extends Model
      * Result of the on-device check comparing the selfie's face with the ID photo it holds.
      * A hint for the review team, never a decision (see the add_face_match migration).
      */
+    /** Length of the free trial a new shop can ask for instead of paying at registration. */
+    public const FREE_TRIAL_DAYS = 14;
+
     public const FACE_MATCH_RESULTS = ['likely', 'unsure', 'no_match', 'no_id_face', 'not_checked'];
 
     // Bumped when the privacy notice changes (2026-11-13: on-device face comparison added).
@@ -37,7 +40,7 @@ class StoreApplication extends Model
     protected $fillable = [
         'user_id', 'store_id', 'first_name', 'middle_name', 'last_name', 'suffix',
         'birthday', 'contact_number', 'requested_plan_id', 'billing_cycle', 'quoted_price',
-        'payment_method', 'payment_receipt_path', 'landmark_image_path', 'dti_registration_path',
+        'payment_method', 'free_trial', 'payment_receipt_path', 'landmark_image_path', 'dti_registration_path',
         'tin_id_path', 'brgy_clearance_path', 'government_id_path', 'government_id_type',
         'business_permit_paths', 'reviewed_by', 'reviewed_at',
         'review_state', 'change_request_items', 'change_request_note', 'change_requested_at', 'change_requested_by',
@@ -68,6 +71,7 @@ class StoreApplication extends Model
         'previous_documents' => 'array',
         'selfie_deleted_at' => 'datetime',
         'face_match_distance' => 'float',
+        'free_trial' => 'boolean',
         'privacy_consent_at' => 'datetime',
         'terms_accepted_at' => 'datetime',
     ];

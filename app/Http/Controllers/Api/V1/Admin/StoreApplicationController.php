@@ -13,8 +13,8 @@ use App\Notifications\StoreApplicationStatusNotification;
 use App\Support\AdminAudit;
 use App\Support\OnlinePlanPayments;
 use App\Support\PlatformPayments;
+use App\Services\Sms\PlatformSms;
 use App\Support\ShopLogin;
-use App\Support\StarterServices;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -208,7 +208,20 @@ class StoreApplicationController extends Controller
             if ($application) {
                 $application->update(['reviewed_by' => $request->user()->id, 'reviewed_at' => now()]);
 
-                if ($application->requested_plan_id) {
+                if ($application->requested_plan_id && $application->free_trial) {
+                    // Free trial: the picked plan for 14 days, nothing to pay yet. When it runs out
+                    // unpaid, app:expire-subscriptions pauses the shop (hidden, records kept).
+                    $trialEnd = now()->addDays(StoreApplication::FREE_TRIAL_DAYS);
+                    StoreSubscription::create([
+                        'store_id' => $store->id,
+                        'plan_id' => $application->requested_plan_id,
+                        'status' => 'trial',
+                        'billing_cycle' => null,
+                        'starts_at' => now(),
+                        'trial_ends_at' => $trialEnd,
+                        'ends_at' => $trialEnd,
+                    ]);
+                } elseif ($application->requested_plan_id) {
                     $subscription = StoreSubscription::create([
                         'store_id' => $store->id,
                         'plan_id' => $application->requested_plan_id,
@@ -222,9 +235,6 @@ class StoreApplicationController extends Controller
                 }
             }
 
-            // What the shop said it specializes in becomes hidden draft services to price.
-            StarterServices::createFor($store);
-
             AdminAudit::record($request, 'store_application_approved', Store::class, $store->id, $store->name, $store->id);
         });
 
@@ -236,6 +246,7 @@ class StoreApplicationController extends Controller
             // The admin still sees the credentials below and can hand them over.
             Log::warning("Store {$store->id} approval email failed: {$e->getMessage()}");
         }
+        PlatformSms::shopDecision($store->fresh(), 'approved');
 
         return response()->json([
             'success' => true,
@@ -336,6 +347,7 @@ class StoreApplicationController extends Controller
         } catch (\Throwable $e) {
             Log::warning("Store application change-request email failed for store {$store->id}: {$e->getMessage()}");
         }
+        PlatformSms::shopDecision($store->fresh(), 'changes_requested');
 
         return response()->json([
             'success' => true,
@@ -358,5 +370,6 @@ class StoreApplicationController extends Controller
         } catch (\Throwable $e) {
             Log::warning("Store application {$decision} email failed for store {$store->id}: {$e->getMessage()}");
         }
+        PlatformSms::shopDecision($store->fresh(), $decision);
     }
 }

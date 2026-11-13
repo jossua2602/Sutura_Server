@@ -48,7 +48,11 @@ class StoreServiceRequest extends FormRequest
             // list when both are present; either may be set alone.
             'service_category' => ['nullable', 'string', Rule::in(CanonicalTaxonomy::SERVICE_CATEGORIES)],
             // Which "Service Categories" chip it sits under on the shop page.
-            'showcase_category' => ['nullable', 'string', Rule::in(CanonicalTaxonomy::SERVICE_SHOWCASE_CATEGORIES)],
+            // A standard group, or one of the shop's own services by name ("+ Add Service").
+            'showcase_category' => ['nullable', 'string', 'max:60', Rule::in(array_merge(
+                CanonicalTaxonomy::SERVICE_SHOWCASE_CATEGORIES,
+                $this->route('store')?->custom_services ?? [],
+            ))],
             'service_leaf_type' => $serviceLeafTypeRule,
             'base_price' => ['nullable', 'numeric', 'min:0'],
             'sale_price' => ['nullable', 'numeric', 'min:0'],
