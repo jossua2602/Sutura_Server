@@ -453,7 +453,8 @@ class JobOrderController extends Controller
         // custom_order_data keys so the shop reads both kinds of order alike.
         $validated = $request->validate([
             'service_id' => 'required|integer',
-            'contact_phone' => 'required|string|max:20',
+            // A PH mobile number: 11 digits starting with 09.
+            'contact_phone' => ['required', 'string', 'regex:/^09\d{9}$/'],
             'store_branch_id' => 'nullable|integer',
 
             'order_mode' => 'required|in:individual,bulk',
@@ -468,6 +469,22 @@ class JobOrderController extends Controller
             'size_breakdown' => 'required_if:order_mode,bulk|array',
             'size_breakdown.*' => 'nullable|integer|min:0|max:500',
             'team_name' => 'nullable|string|max:255',
+            // Bulk: optional body measurements for some of the people (name, size, measurements).
+            'member_measurements' => 'nullable|array|max:100',
+            'member_measurements.*' => 'array',
+            'member_measurements.*.name' => 'nullable|string|max:100',
+            'member_measurements.*.size' => 'nullable|string|max:50',
+            'member_measurements.*.unit' => 'nullable|in:in,cm',
+            // Range-checked below, with the same message as individual measurements.
+            'member_measurements.*.chest' => 'nullable',
+            'member_measurements.*.waist' => 'nullable',
+            'member_measurements.*.hips' => 'nullable',
+            'member_measurements.*.shoulders' => 'nullable',
+            'member_measurements.*.top_length' => 'nullable',
+            'member_measurements.*.pants_length' => 'nullable',
+            'member_measurements.*.neck' => 'nullable',
+            'member_measurements.*.sleeve' => 'nullable',
+            'member_measurements.*.inseam' => 'nullable',
             'measurement_sheets' => 'nullable|array|max:5',
             'measurement_sheets.*' => 'string|max:1000',
 
@@ -516,10 +533,30 @@ class JobOrderController extends Controller
             }
         }
 
+        $service = Service::where('id', $validated['service_id'])
+            ->where('store_id', $store->id)
+            ->where('is_active', true)
+            ->with('pricing')
+            ->first();
+
+        if (! $service) {
+            return response()->json(['success' => false, 'message' => 'This service is not available to order right now.'], 404);
+        }
+
+        // Bulk sizes are the service's own size-chart sizes when it has a chart, else XS–3XL.
+        $chartSizes = collect($service->size_chart_rows ?? [])
+            ->map(fn ($row) => trim((string) ($row['size'] ?? '')))
+            ->filter()
+            ->unique()
+            ->values()
+            ->all();
+        $bulkSizes = $chartSizes ?: ['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'];
+
         $sizeBreakdown = null;
+        $members = null;
         if ($validated['order_mode'] === 'bulk') {
             $sizeBreakdown = collect($validated['size_breakdown'] ?? [])
-                ->only(['XS', 'S', 'M', 'L', 'XL', '2XL', '3XL'])
+                ->only($bulkSizes)
                 ->map(fn ($qty) => (int) $qty)
                 ->filter(fn ($qty) => $qty > 0)
                 ->all();
@@ -530,16 +567,38 @@ class JobOrderController extends Controller
                     'errors' => ['size_breakdown' => ['Enter at least one size quantity.']],
                 ], 422);
             }
-        }
 
-        $service = Service::where('id', $validated['service_id'])
-            ->where('store_id', $store->id)
-            ->where('is_active', true)
-            ->with('pricing')
-            ->first();
-
-        if (! $service) {
-            return response()->json(['success' => false, 'message' => 'This service is not available to order right now.'], 404);
+            // Each person: name, a size from the list, and plain-number measurements (0–200).
+            $members = [];
+            foreach ($validated['member_measurements'] ?? [] as $i => $row) {
+                $person = array_filter([
+                    'name' => trim((string) ($row['name'] ?? '')) ?: null,
+                    'size' => in_array($row['size'] ?? null, $bulkSizes, true) ? $row['size'] : null,
+                ]);
+                $values = [];
+                foreach (['chest', 'waist', 'hips', 'shoulders', 'top_length', 'pants_length', 'neck', 'sleeve', 'inseam'] as $key) {
+                    $value = $row[$key] ?? null;
+                    if ($value === null || $value === '') {
+                        continue;
+                    }
+                    if (! is_numeric($value) || $value <= 0 || $value > 200) {
+                        return response()->json([
+                            'success' => false,
+                            'message' => 'Measurements must be numbers between 0 and 200.',
+                            'errors' => ["member_measurements.$i.$key" => ['Enter a number between 0 and 200.']],
+                        ], 422);
+                    }
+                    $values[$key] = (string) (0 + $value);
+                }
+                if ($values) {
+                    $person['unit'] = ($row['unit'] ?? 'in') === 'cm' ? 'cm' : 'in';
+                    $person += $values;
+                }
+                if (! empty($person['name']) || $values) {
+                    $members[] = $person;
+                }
+            }
+            $members = $members ?: null;
         }
         if ($service->service_types === [Service::TYPE_ALTERATION_REPAIR]) {
             return response()->json(['success' => false, 'message' => 'Repairs use the repair request form instead.'], 422);
@@ -634,6 +693,7 @@ class JobOrderController extends Controller
             'contact_phone' => trim($validated['contact_phone']),
             'individual_measurements' => $measurements,
             'size_breakdown' => $sizeBreakdown,
+            'member_measurements' => $members,
             'measurement_sheets' => $sheets ?: null,
             'team_name' => $sizeBreakdown ? (trim((string) ($validated['team_name'] ?? '')) ?: null) : null,
             'size' => $sizeBreakdown ? null : ($validated['size'] ?? null),
@@ -973,7 +1033,7 @@ class JobOrderController extends Controller
                 $validated['store_branch_id'] = $staffBranch;
             }
             $validated['balance'] = $validated['total_amount'];
-            unset($validated['discount_amount'], $validated['payment_method']);
+            unset($validated['discount_amount'], $validated['payment_method'], $validated['cash_tendered']);
         }
 
         $validated['order_number'] = $this->generateOrderNumber($store);
@@ -1024,6 +1084,16 @@ class JobOrderController extends Controller
         $totalAmount = (float) $validated['total_amount'];
         $balance = (float) $validated['balance'];
         $initialPayment = $totalAmount - $balance;
+
+        // Cash the customer handed over for that first payment. Empty means the exact amount.
+        $creationMethod = $validated['payment_method'] ?? 'cash';
+        $cashTendered = isset($validated['cash_tendered']) && $creationMethod === 'cash' && $initialPayment > 0
+            ? round((float) $validated['cash_tendered'], 2)
+            : null;
+        unset($validated['cash_tendered']);
+        if ($cashTendered !== null && $cashTendered < round($initialPayment, 2)) {
+            return response()->json(['message' => "Cash tendered can't be less than the amount being paid."], 422);
+        }
 
         if ($balance <= 0) {
             $validated['payment_status'] = 'paid';
@@ -1144,7 +1214,9 @@ class JobOrderController extends Controller
         if ($initialPayment > 0) {
             $jobOrder->payments()->create([
                 'amount' => $initialPayment,
-                'payment_method' => $validated['payment_method'] ?? 'cash',
+                'payment_method' => $creationMethod,
+                'cash_tendered' => $cashTendered,
+                'change_amount' => $cashTendered !== null ? round($cashTendered - $initialPayment, 2) : null,
                 'source' => 'walk_in',
                 'type' => $balance <= 0 ? 'full' : 'deposit',
                 'recorded_by' => $request->user()->id,

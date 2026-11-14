@@ -69,6 +69,8 @@ class StoreJobOrderRequest extends FormRequest
             'total_amount' => ['required', 'numeric', 'min:0'],
             'balance' => ['required', 'numeric', 'min:0', 'lte:total_amount'],
             'payment_method' => ['nullable', 'string', 'in:cash,gcash,paymaya'],
+            // Cash handed over for the first payment (empty = exact amount); change is worked out here.
+            'cash_tendered' => ['nullable', 'numeric', 'min:0', 'max:99999999'],
             'due_date' => ['nullable', 'date'],
             'notes' => ['nullable', 'string'],
             'custom_order_data' => ['nullable', 'array'],
