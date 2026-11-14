@@ -458,6 +458,8 @@ class JobOrderController extends Controller
 
             'order_mode' => 'required|in:individual,bulk',
             'measurement_id' => 'nullable|integer',
+            // own = typed / card photo, saved = profile on file, shop = "have the shop measure me".
+            'measurement_source' => ['nullable', Rule::in(JobOrder::MEASUREMENT_SOURCES)],
             'individual_measurements' => 'nullable|array',
             'individual_measurements.unit' => 'nullable|in:in,cm',
             'individual_measurements.*' => 'nullable',
@@ -680,6 +682,8 @@ class JobOrderController extends Controller
             'customer_id' => $customerId,
             'service_id' => $service->id,
             'measurement_id' => $measurementId,
+            // Only an individual order is measured per person; a bulk batch is counted by size.
+            'measurement_source' => $validated['order_mode'] === 'individual' ? ($validated['measurement_source'] ?? null) : null,
             'quantity' => $quantity,
             'garment_category' => $validated['garment_category'] ?? $service->service_category,
             'material_source' => $validated['material_source'],
@@ -1191,6 +1195,9 @@ class JobOrderController extends Controller
             ? JobOrder::where('store_id', $store->id)->where('customer_id', $jobOrder->customer_id)->count()
             : 0;
 
+        // "Have the shop measure me": has a measurement visit been booked yet?
+        $jobOrder->measurement_visit = $jobOrder->measurementVisit();
+
         // A job order pins measurement_id at creation and nothing ever
         // re-points it — Measurement::update() always closes out the old
         // version and creates a new one (see MeasurementController@update),
@@ -1366,14 +1373,29 @@ class JobOrderController extends Controller
         // $newStatus, so a request that simultaneously advances the job
         // into production can't launder a stale-snapshot swap through the
         // same call.
+        // Attaching the *first* measurements (an order taken as "have the shop
+        // measure me") swaps nothing out, so it's allowed at any stage.
         if (
             array_key_exists('measurement_id', $validated)
+            && $jobOrder->measurement_id !== null
             && (int) ($validated['measurement_id'] ?? 0) !== (int) $jobOrder->measurement_id
             && in_array($oldStatus, JobOrder::STAGES_REQUIRING_DOWNPAYMENT, true)
         ) {
             return response()->json([
                 'success' => false,
                 'message' => 'This job has already started production — its measurement snapshot is locked and can no longer be switched to a different version.',
+            ], 422);
+        }
+
+        // The form request only checks the measurement is this shop's; it must also be this order's customer's.
+        if (
+            ! empty($validated['measurement_id'])
+            && $jobOrder->customer_id
+            && ! Measurement::where('id', $validated['measurement_id'])->where('customer_id', $jobOrder->customer_id)->exists()
+        ) {
+            return response()->json([
+                'success' => false,
+                'message' => "Those measurements belong to a different customer. Pick one of this customer's profiles.",
             ], 422);
         }
 

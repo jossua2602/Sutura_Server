@@ -122,6 +122,9 @@ class JobOrderTrackingController extends Controller
                 'required_deposit' => round($jobOrder->requiredDepositFraction() * ((float) $jobOrder->total_amount - (float) $jobOrder->discount_amount), 2),
                 'fitting_requirement' => $jobOrder->fitting_requirement,
                 'measurement_requirement' => $jobOrder->measurement_requirement,
+                // "Have the shop measure me" + the visit the shop booked for it (null until booked).
+                'measurement_source' => $jobOrder->measurement_source,
+                'measurement_visit' => $jobOrder->measurementVisit(),
                 'store_branch_id' => $jobOrder->store_branch_id,
                 'created_at' => $jobOrder->created_at,
                 'updated_at' => $jobOrder->updated_at,

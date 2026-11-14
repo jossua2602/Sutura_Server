@@ -110,7 +110,7 @@ class JobOrder extends Model
 
     protected $fillable = [
         'order_number', 'tracking_code', 'intake_channel', 'fulfillment_type', 'store_id', 'store_branch_id', 'customer_id', 'service_id', 'service_package_id',
-        'catalog_item_id', 'assigned_staff_id', 'assigned_to', 'measurement_id', 'quantity', 'total_amount',
+        'catalog_item_id', 'assigned_staff_id', 'assigned_to', 'measurement_id', 'measurement_source', 'quantity', 'total_amount',
         'balance', 'payment_status', 'status', 'due_date', 'notes',
         'custom_order_data',
         'measurement_requirement', 'fitting_requirement', 'payment_policy', 'payment_policy_percent',
@@ -205,6 +205,31 @@ class JobOrder extends Model
     public function appointments(): HasMany
     {
         return $this->hasMany(Appointment::class);
+    }
+
+    /** How an online customer said they'd be measured (`measurement_source`). */
+    public const MEASUREMENT_SOURCES = ['own', 'saved', 'shop'];
+
+    /**
+     * The visit booked to measure a customer who asked the shop to measure them:
+     * the next open measurement/fitting appointment on this order, else the latest
+     * completed one. Null when nothing is booked yet (or the customer measured themselves).
+     */
+    public function measurementVisit(): ?array
+    {
+        if ($this->measurement_source !== 'shop') {
+            return null;
+        }
+        $visits = $this->appointments()->whereIn('appointment_type', ['measurement', 'fitting']);
+        $visit = (clone $visits)->whereIn('status', ['pending', 'confirmed', 'in_progress'])->orderBy('scheduled_at')->first()
+            ?? (clone $visits)->where('status', 'completed')->latest('scheduled_at')->first();
+
+        return $visit ? [
+            'id' => $visit->id,
+            'scheduled_at' => $visit->scheduled_at,
+            'status' => $visit->status,
+            'appointment_type' => $visit->appointment_type,
+        ] : null;
     }
 
     public function assignedStaff(): BelongsTo

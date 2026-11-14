@@ -69,6 +69,7 @@ class AnalyticsController extends Controller
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_jobs,
                 COALESCE(SUM(total_amount), 0) as sum_total_amount,
                 COALESCE(SUM(balance), 0) as sum_balance,
+                COALESCE(SUM(CASE WHEN status NOT IN ('cancelled', 'rejected', 'pending') THEN balance ELSE 0 END), 0) as sum_owed,
                 COALESCE(SUM(discount_amount), 0) as sum_discount_amount
             ")
             ->groupBy('store_branch_id')
@@ -148,7 +149,8 @@ class AnalyticsController extends Controller
                 'completed_jobs' => $completedJobs,
                 'completion_rate' => $totalJobs > 0 ? round(($completedJobs / $totalJobs) * 100, 1) : 0,
                 'total_revenue' => max(0.0, $sumTotal - $sumBal - $sumDisc),
-                'total_outstanding_balance' => $sumBal,
+                // Owed = accepted orders only (not cancelled/declined, not still waiting for approval).
+                'total_outstanding_balance' => (float) ($jobStat->sum_owed ?? 0),
                 'total_appointments' => (int) ($apptStat->total_appointments ?? 0),
                 'total_walkin_orders' => (int) ($catStat->total_walkin_orders ?? 0),
                 'total_staff' => $branchId ? (int) ($staffCounts[$branchId] ?? 0) : 0,
@@ -331,6 +333,9 @@ class AnalyticsController extends Controller
                 SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_jobs,
                 COALESCE(SUM(total_amount), 0) as total_amount,
                 COALESCE(SUM(balance), 0) as total_balance,
+                COALESCE(SUM(CASE WHEN status NOT IN ('cancelled', 'rejected', 'pending') THEN balance ELSE 0 END), 0) as owed_balance,
+                COALESCE(SUM(CASE WHEN status = 'pending' THEN balance ELSE 0 END), 0) as pending_approval_balance,
+                SUM(CASE WHEN status = 'pending' AND balance > 0 THEN 1 ELSE 0 END) as pending_approval_count,
                 COALESCE(SUM(discount_amount), 0) as total_discount
             ")
             ->first();
@@ -338,7 +343,11 @@ class AnalyticsController extends Controller
         $totalJobs = (int) ($jobsOverview->total_jobs ?? 0);
         $completedJobs = (int) ($jobsOverview->completed_jobs ?? 0);
         $totalRevenue = (float) ($jobsOverview->total_amount ?? 0) - (float) ($jobsOverview->total_balance ?? 0) - (float) ($jobsOverview->total_discount ?? 0);
-        $totalBalance = (float) ($jobsOverview->total_balance ?? 0);
+        // Outstanding = money owed on accepted orders. Cancelled/declined orders owe nothing, and orders
+        // still waiting for the shop's approval are reported separately (they may yet be declined).
+        $totalBalance = (float) ($jobsOverview->owed_balance ?? 0);
+        $pendingApprovalBalance = (float) ($jobsOverview->pending_approval_balance ?? 0);
+        $pendingApprovalCount = (int) ($jobsOverview->pending_approval_count ?? 0);
 
         // Consolidated appointment aggregates (1 query instead of 3)
         $appointmentsOverview = (clone $appointmentsQuery)
@@ -745,6 +754,8 @@ class AnalyticsController extends Controller
                 'completed_jobs' => $completedJobs,
                 'total_revenue' => $totalRevenue,
                 'total_outstanding_balance' => $totalBalance,
+                'pending_approval_balance' => $pendingApprovalBalance,
+                'pending_approval_count' => $pendingApprovalCount,
                 'upcoming_appointments' => $upcomingAppointments,
                 'booking_conversion_rate' => $bookingConversionRate,
                 'total_appointments' => $branchAppointments()->count(),

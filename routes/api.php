@@ -356,6 +356,11 @@ Route::prefix('v1')->group(function () {
                 Route::get('/receipts', [\App\Http\Controllers\Api\V1\ReceiptExportController::class, 'index']);
                 Route::get('/receipts/file', [\App\Http\Controllers\Api\V1\ReceiptExportController::class, 'file']);
                 Route::get('/receipts/export', [\App\Http\Controllers\Api\V1\ReceiptExportController::class, 'export']);
+                // Payments → Cash: every cash payment + today/week/month totals and cash by staff.
+                Route::get('/cash-payments', [\App\Http\Controllers\Api\V1\CashPaymentController::class, 'index']);
+                Route::get('/cash-payments/export', [\App\Http\Controllers\Api\V1\CashPaymentController::class, 'export']);
+                // The shop's logo through the API, so the branded Excel exports can embed it.
+                Route::get('/branding/logo', [\App\Http\Controllers\Api\V1\ReceiptExportController::class, 'logo']);
 
                 // Completed Orders page: completed jobs only + their summary cards (shows order value, so not staff)
                 Route::get('/completed-orders', [\App\Http\Controllers\Api\V1\CompletedOrderController::class, 'index']);

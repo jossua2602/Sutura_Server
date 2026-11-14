@@ -107,6 +107,22 @@ class ReceiptExportController extends Controller
         return response($located['contents'], 200, ['Content-Type' => 'application/octet-stream', 'Content-Disposition' => 'attachment; filename="'.$name.'"']);
     }
 
+    /**
+     * The shop's own logo bytes, for the branded Excel exports. Uploaded files sit outside the API's CORS
+     * paths, so the browser can't read them directly to embed them; it reads them through here instead.
+     * 404 when the shop has no logo (the export then uses the SUTURA logo).
+     */
+    public function logo(Store $store): Response
+    {
+        $located = ReceiptFiles::locate($store->logo_path);
+        abort_unless($located && in_array($located['ext'], ['png', 'jpg', 'jpeg', 'webp', 'gif'], true), 404, 'This shop has no logo.');
+        $type = $located['ext'] === 'jpg' ? 'image/jpeg' : 'image/'.$located['ext'];
+
+        return isset($located['absolute'])
+            ? response()->file($located['absolute'], ['Content-Type' => $type, 'Cache-Control' => 'private, max-age=3600'])
+            : response($located['contents'], 200, ['Content-Type' => $type, 'Cache-Control' => 'private, max-age=3600']);
+    }
+
     /** Bulk download. csv = the statement; zip = statement + every receipt image. Premium. */
     public function export(Request $request, Store $store): Response
     {
