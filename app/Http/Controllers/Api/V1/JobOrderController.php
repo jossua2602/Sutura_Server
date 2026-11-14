@@ -620,7 +620,13 @@ class JobOrderController extends Controller
         }
 
         $unitPrice = $pricing && $pricing->amount !== null ? (float) $pricing->amount : $service->effectivePrice();
-        $totalAmount = round($unitPrice * $quantity, 2);
+        // Own fabric: the service's per-piece deduction comes off the price up front (never below ₱0),
+        // so the total and the deposit the customer pays are both on the lower price.
+        $fabricEach = $validated['material_source'] === 'customer_supplied'
+            ? min((float) ($service->own_fabric_deduction ?? 0), $unitPrice)
+            : 0.0;
+        $fabricDeduction = round($fabricEach * $quantity, 2);
+        $totalAmount = round(($unitPrice - $fabricEach) * $quantity, 2);
 
         $sheets = $validated['measurement_sheets'] ?? [];
         $customOrderData = array_filter([
@@ -633,6 +639,8 @@ class JobOrderController extends Controller
             'size' => $sizeBreakdown ? null : ($validated['size'] ?? null),
             'option' => $pricing && $service->pricing->count() > 1 ? $pricing->label : null,
             'customer_fabric' => $validated['material_source'] === 'customer_supplied' ? ($validated['material_description'] ?? null) : null,
+            // Same key the walk-in form uses for its fabric deduction (the total already has it taken off).
+            'own_fabric_deduction' => $fabricDeduction > 0 ? number_format($fabricDeduction, 2, '.', '') : null,
             'item_rate' => (string) $unitPrice,
             'payment_term' => $validated['payment_term'],
             // The customer asks; the shop decides whether to take it as rush and sets the fee.
@@ -1833,37 +1841,47 @@ class JobOrderController extends Controller
         $validated = $request->validate([
             'amount' => 'required|numeric|min:0.01',
             'reason' => 'nullable|string|max:500',
+            // fabric = the customer brought their own fabric. Same balance effect as a discount, but
+            // recorded as a fabric deduction (own_fabric_deduction) so receipts and reports can name it.
+            'kind' => 'nullable|in:discount,fabric',
         ]);
 
         $discountAmount = (float) $validated['amount'];
+        $isFabric = ($validated['kind'] ?? 'discount') === 'fabric';
 
         try {
-            DB::transaction(function () use ($jobOrder, $discountAmount, $validated, $request) {
+            DB::transaction(function () use ($jobOrder, $discountAmount, $validated, $request, $isFabric) {
                 $locked = JobOrder::where('id', $jobOrder->id)->lockForUpdate()->firstOrFail();
 
                 $currentBalance = (float) $locked->balance;
                 if ($discountAmount > $currentBalance) {
-                    throw new \RuntimeException('Discount cannot exceed the remaining balance (₱'.number_format($currentBalance, 2).').');
+                    throw new \RuntimeException(($isFabric ? 'The fabric deduction' : 'Discount').' cannot exceed the remaining balance (₱'.number_format($currentBalance, 2).').');
                 }
 
                 $newBalance = round($currentBalance - $discountAmount, 2);
                 $newDiscountTotal = round((float) ($locked->discount_amount ?? 0) + $discountAmount, 2);
 
-                $locked->update([
+                $changes = [
                     'balance' => $newBalance,
                     'discount_amount' => $newDiscountTotal,
                     'payment_status' => $newBalance <= 0 ? 'paid' : $locked->payment_status,
-                ]);
+                ];
+                if ($isFabric) {
+                    $data = $locked->custom_order_data ?? [];
+                    $data['own_fabric_deduction_after'] = number_format(round((float) ($data['own_fabric_deduction_after'] ?? 0) + $discountAmount, 2), 2, '.', '');
+                    $changes['custom_order_data'] = $data;
+                }
+                $locked->update($changes);
 
                 $store = $locked->store;
                 $store->auditLogs()->create([
                     'user_id' => $request->user()->id,
-                    'action' => 'discount_applied',
+                    'action' => $isFabric ? 'fabric_deduction_applied' : 'discount_applied',
                     'model_type' => JobOrder::class,
                     'model_id' => $locked->id,
                     'payload' => [
                         'amount' => $discountAmount,
-                        'reason' => $validated['reason'] ?? null,
+                        'reason' => $validated['reason'] ?? ($isFabric ? "Customer's own fabric" : null),
                     ],
                     'ip_address' => $request->ip(),
                 ]);
@@ -1874,7 +1892,7 @@ class JobOrderController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => 'Discount applied successfully.',
+            'message' => $isFabric ? 'Fabric deduction applied.' : 'Discount applied successfully.',
             'data' => $jobOrder->fresh(['customer', 'service', 'assignedStaff', 'payments.recordedBy:id,name', 'staffStages']),
         ]);
     }

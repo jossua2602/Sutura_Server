@@ -61,6 +61,7 @@ class StoreServiceRequest extends FormRequest
             'estimated_days' => ['nullable', 'integer', 'min:1'],
             'estimated_days_max' => ['nullable', 'integer', 'min:1', 'gt:estimated_days'],
             'min_order_qty' => ['nullable', 'integer', 'min:1'],
+            'own_fabric_deduction' => ['nullable', 'numeric', 'min:0', 'max:999999'],
             'custom_fields' => ['nullable', 'array'],
             'roster_fields' => ['nullable', 'array'],
             'roster_fields.*.id' => ['required_with:roster_fields', 'string'],

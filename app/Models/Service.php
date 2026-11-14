@@ -43,6 +43,8 @@ class Service extends Model
         'base_price', 'sale_price', 'sale_starts_at', 'sale_ends_at',
         'estimated_days', 'estimated_days_max', 'min_order_qty', 'is_active', 'custom_fields', 'roster_fields', 'image_url',
         'size_chart_image_url', 'size_chart_columns', 'size_chart_rows',
+        // Per-piece amount off when the customer brings their own fabric (null = none set).
+        'own_fabric_deduction',
     ];
 
     protected $casts = [
@@ -51,6 +53,7 @@ class Service extends Model
         'sale_starts_at' => 'datetime',
         'sale_ends_at' => 'datetime',
         'min_order_qty' => 'integer',
+        'own_fabric_deduction' => 'decimal:2',
         'is_active' => 'boolean',
         'custom_fields' => 'array',
         'roster_fields' => 'array',

@@ -175,7 +175,7 @@ class ServiceController extends Controller
                 // sibling item-detail lookup already embeds catalog reviews.
                 'reviews' => fn ($q) => $q->with('user:id,name,profile_picture')->latest(),
             ])
-            ->get(['id', 'name', 'description', 'categories', 'service_types', 'service_category', 'showcase_category', 'service_leaf_type', 'base_price', 'sale_price', 'sale_starts_at', 'sale_ends_at', 'estimated_days', 'estimated_days_max', 'min_order_qty', 'is_active', 'image_url', 'custom_fields', 'size_chart_image_url', 'size_chart_columns', 'size_chart_rows', 'measurement_requirement', 'fitting_requirement', 'payment_policy', 'payment_policy_percent'])
+            ->get(['id', 'name', 'description', 'categories', 'service_types', 'service_category', 'showcase_category', 'service_leaf_type', 'base_price', 'sale_price', 'sale_starts_at', 'sale_ends_at', 'estimated_days', 'estimated_days_max', 'min_order_qty', 'own_fabric_deduction', 'is_active', 'image_url', 'custom_fields', 'size_chart_image_url', 'size_chart_columns', 'size_chart_rows', 'measurement_requirement', 'fitting_requirement', 'payment_policy', 'payment_policy_percent'])
             ->each(function (Service $service) use ($store) {
                 // What an online order of this service will ask of the customer
                 // (measurements, fitting, deposit) — service setting, else the shop default.
