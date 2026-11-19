@@ -37,6 +37,9 @@ class JobOrderController extends Controller
     /** Marks the deposit saved by store(); its amount is already off the balance. */
     public const CREATION_DEPOSIT_NOTE = 'Initial downpayment recorded during order creation.';
 
+    /** Size-breakdown line for online bulk-order people sized by body measurements or at the shop. */
+    public const CUSTOM_FIT_SIZE = 'Custom fit';
+
     /**
      * Branch managers/staff pinned to a branch may only act on job orders
      * that belong to that same branch (store_owner is unrestricted). Jobs or
@@ -469,11 +472,12 @@ class JobOrderController extends Controller
             'size_breakdown' => 'required_if:order_mode,bulk|array',
             'size_breakdown.*' => 'nullable|integer|min:0|max:500',
             'team_name' => 'nullable|string|max:255',
-            // Bulk: optional body measurements for some of the people (name, size, measurements).
-            'member_measurements' => 'nullable|array|max:100',
+            // Bulk: one row per person (name, a standard size or body measurements, or measured at the shop).
+            'member_measurements' => 'nullable|array|max:500',
             'member_measurements.*' => 'array',
             'member_measurements.*.name' => 'nullable|string|max:100',
             'member_measurements.*.size' => 'nullable|string|max:50',
+            'member_measurements.*.measure_at_shop' => 'nullable|boolean',
             'member_measurements.*.unit' => 'nullable|in:in,cm',
             // Range-checked below, with the same message as individual measurements.
             'member_measurements.*.chest' => 'nullable',
@@ -560,20 +564,22 @@ class JobOrderController extends Controller
                 ->map(fn ($qty) => (int) $qty)
                 ->filter(fn ($qty) => $qty > 0)
                 ->all();
-            if (! $sizeBreakdown) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Add how many pieces you need in at least one size.',
-                    'errors' => ['size_breakdown' => ['Enter at least one size quantity.']],
-                ], 422);
-            }
 
-            // Each person: name, a size from the list, and plain-number measurements (0–200).
+            // Each person: name, a size from the list, and plain-number measurements (0–200),
+            // or flagged to be measured at the shop.
             $members = [];
+            // People with no standard size (body measurements / measured at the shop) are
+            // still one piece each; they're counted under one "Custom fit" line.
+            $customFit = 0;
             foreach ($validated['member_measurements'] ?? [] as $i => $row) {
+                $hasSize = in_array($row['size'] ?? null, $bulkSizes, true);
+                if (! $hasSize) {
+                    $customFit++;
+                }
                 $person = array_filter([
                     'name' => trim((string) ($row['name'] ?? '')) ?: null,
-                    'size' => in_array($row['size'] ?? null, $bulkSizes, true) ? $row['size'] : null,
+                    'size' => $hasSize ? $row['size'] : null,
+                    'measure_at_shop' => ! empty($row['measure_at_shop']) ? true : null,
                 ]);
                 $values = [];
                 foreach (['chest', 'waist', 'hips', 'shoulders', 'top_length', 'pants_length', 'neck', 'sleeve', 'inseam'] as $key) {
@@ -594,11 +600,22 @@ class JobOrderController extends Controller
                     $person['unit'] = ($row['unit'] ?? 'in') === 'cm' ? 'cm' : 'in';
                     $person += $values;
                 }
-                if (! empty($person['name']) || $values) {
+                if (! empty($person['name']) || ! empty($person['measure_at_shop']) || $values) {
                     $members[] = $person;
                 }
             }
             $members = $members ?: null;
+
+            if ($customFit > 0) {
+                $sizeBreakdown[self::CUSTOM_FIT_SIZE] = $customFit;
+            }
+            if (! $sizeBreakdown) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Add how many pieces you need in at least one size.',
+                    'errors' => ['size_breakdown' => ['Enter at least one size quantity.']],
+                ], 422);
+            }
         }
         if ($service->service_types === [Service::TYPE_ALTERATION_REPAIR]) {
             return response()->json(['success' => false, 'message' => 'Repairs use the repair request form instead.'], 422);
@@ -718,6 +735,16 @@ class JobOrderController extends Controller
             ->where('is_active', true)
             ->where('kind', 'gcash')
             ->where(fn ($q) => $q->whereNull('store_branch_id')->when($branch, fn ($qq) => $qq->orWhere('store_branch_id', $branch->id)));
+
+        // Payment is due up front but the shop has no GCash account to pay to:
+        // the order can't be placed yet (the customer would have nowhere to pay).
+        if ($amountDue > 0 && ! (clone $gcashAccounts)->exists()) {
+            return response()->json([
+                'success' => false,
+                'message' => "You can't place this order yet. This shop hasn't set up a GCash account for payments.",
+                'errors' => ['payment_method_id' => ['This shop has no GCash account yet.']],
+            ], 422);
+        }
 
         $gcash = null;
         if ($amountDue > 0 && (clone $gcashAccounts)->exists()) {

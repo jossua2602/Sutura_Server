@@ -5,6 +5,7 @@ namespace App\Http\Requests\Store;
 use App\Models\JobOrder;
 use App\Models\Store;
 use App\Models\User;
+use App\Support\RosterMeasurementRules;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -100,6 +101,8 @@ class StoreJobOrderRequest extends FormRequest
             'custom_order_data.team_roster.*.bottom_size' => ['nullable', 'string', 'max:50'],
             'custom_order_data.team_roster.*.remarks' => ['nullable', 'string', 'max:255'],
             'custom_order_data.team_roster.*.completed' => ['nullable', 'boolean'],
+            // Each person's body measurements / "measure at shop" flag (walk-in bulk orders).
+            ...RosterMeasurementRules::rules(),
             'custom_order_data.pre_existing_damage_notes' => ['nullable', 'string', 'max:2000'],
             'store_branch_id' => [
                 'nullable', 'integer',
