@@ -45,6 +45,8 @@ class Service extends Model
         'size_chart_image_url', 'size_chart_columns', 'size_chart_rows',
         // Per-piece amount off when the customer brings their own fabric (null = none set).
         'own_fabric_deduction',
+        // Set when the shop's plan allows fewer services (App\Support\PlanLimits); is_active is then false.
+        'plan_locked_at',
     ];
 
     protected $casts = [
@@ -55,6 +57,7 @@ class Service extends Model
         'min_order_qty' => 'integer',
         'own_fabric_deduction' => 'decimal:2',
         'is_active' => 'boolean',
+        'plan_locked_at' => 'datetime',
         'custom_fields' => 'array',
         'roster_fields' => 'array',
         'tags' => 'array',

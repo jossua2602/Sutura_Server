@@ -29,10 +29,13 @@ class StaffProfile extends Model
     protected $fillable = [
         'user_id', 'store_id', 'store_branch_id', 'role', 'additional_roles', 'specialization',
         'bio', 'is_active', 'hired_at', 'is_branch_manager', 'is_available',
+        // Set when the shop's plan allows fewer staff (App\Support\PlanLimits): the account is read-only.
+        'plan_locked_at',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'plan_locked_at' => 'datetime',
         // Was missing from both $fillable and here — ProfileController's
         // existing toggleAvailability() endpoint has been silently no-op'ing
         // on every call since the column was added, same silent-drop bug

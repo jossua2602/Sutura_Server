@@ -56,7 +56,7 @@ class DashboardController extends Controller
 
     public function subscriptionReport(Request $request): JsonResponse
     {
-        $monthCount = $this->monthCount($request);
+        [$start, $end, $monthStarts] = $this->reportWindow($request);
         $byPlan = $this->activeSubscriptions()
             ->join('subscription_plans', 'subscription_plans.id', '=', 'store_subscriptions.plan_id')
             ->selectRaw('subscription_plans.id, subscription_plans.name, subscription_plans.price_monthly, COUNT(*) as stores')
@@ -72,13 +72,12 @@ class DashboardController extends Controller
                 'estimated_mrr' => round((float) $row->price_monthly * (int) $row->stores, 2),
             ]);
 
-        $start = Carbon::now()->startOfMonth()->subMonths($monthCount - 1);
-        $started = StoreSubscription::where('starts_at', '>=', $start)->get(['starts_at'])
+        $started = StoreSubscription::whereBetween('starts_at', [$start, $end])->get(['starts_at'])
             ->groupBy(fn ($s) => $s->starts_at->format('Y-m'));
         // Decision timestamps, not updated_at — any profile edit bumps that.
-        $approvedByMonth = Store::where('approved_at', '>=', $start)->get(['approved_at'])
+        $approvedByMonth = Store::whereBetween('approved_at', [$start, $end])->get(['approved_at'])
             ->groupBy(fn ($s) => $s->approved_at->format('Y-m'));
-        $rejectedByMonth = StoreApplication::where('reviewed_at', '>=', $start)
+        $rejectedByMonth = StoreApplication::whereBetween('reviewed_at', [$start, $end])
             ->whereHas('store', fn ($q) => $q->where('status', 'rejected'))
             ->get(['reviewed_at'])
             ->groupBy(fn ($a) => $a->reviewed_at->format('Y-m'));
@@ -88,16 +87,16 @@ class DashboardController extends Controller
         $planPayments = SubscriptionUpgradeRequest::with('plan:id,name')
             ->inLedger()
             ->where('status', 'approved')
-            ->where('reviewed_at', '>=', $start)
+            ->whereBetween('reviewed_at', [$start, $end])
             ->get(['id', 'plan_id', 'billing_cycle', 'quoted_price', 'refund_amount', 'refund_status', 'reviewed_at']);
         $paymentsByMonth = $planPayments->groupBy(fn ($p) => $p->reviewed_at->format('Y-m'));
 
-        $months = collect(range(0, $monthCount - 1))->map(function (int $i) use ($start, $started, $approvedByMonth, $rejectedByMonth, $paymentsByMonth) {
-            $key = $start->copy()->addMonths($i)->format('Y-m');
+        $months = $monthStarts->map(function (Carbon $month) use ($started, $approvedByMonth, $rejectedByMonth, $paymentsByMonth) {
+            $key = $month->format('Y-m');
             $paid = $paymentsByMonth->get($key, collect());
 
             return [
-                'label' => $start->copy()->addMonths($i)->format('M Y'),
+                'label' => $month->format('M Y'),
                 'new_subscriptions' => $started->get($key, collect())->count(),
                 'approved' => $approvedByMonth->get($key, collect())->count(),
                 'rejected' => $rejectedByMonth->get($key, collect())->count(),
@@ -202,25 +201,24 @@ class DashboardController extends Controller
      */
     public function revenueReport(Request $request): JsonResponse
     {
-        $monthCount = $this->monthCount($request);
-        $start = Carbon::now()->startOfMonth()->subMonths($monthCount - 1);
+        [$start, $end, $monthStarts] = $this->reportWindow($request);
 
-        $jobs = JobOrder::where('created_at', '>=', $start)
+        $jobs = JobOrder::whereBetween('created_at', [$start, $end])
             ->get(['id', 'store_id', 'status', 'total_amount', 'balance', 'discount_amount', 'created_at']);
-        $catalogSales = CatalogOrder::where('created_at', '>=', $start)
+        $catalogSales = CatalogOrder::whereBetween('created_at', [$start, $end])
             ->where('payment_status', 'paid')
             ->get(['id', 'store_id', 'total_amount', 'created_at']);
         $collected = fn (JobOrder $job) => max(0.0, (float) $job->total_amount - (float) $job->balance - (float) $job->discount_amount);
 
         $jobsByMonth = $jobs->groupBy(fn ($j) => $j->created_at->format('Y-m'));
         $salesByMonth = $catalogSales->groupBy(fn ($o) => $o->created_at->format('Y-m'));
-        $months = collect(range(0, $monthCount - 1))->map(function (int $i) use ($start, $jobsByMonth, $salesByMonth, $collected) {
-            $key = $start->copy()->addMonths($i)->format('Y-m');
+        $months = $monthStarts->map(function (Carbon $month) use ($jobsByMonth, $salesByMonth, $collected) {
+            $key = $month->format('Y-m');
             $orderRevenue = round((float) $jobsByMonth->get($key, collect())->sum($collected), 2);
             $catalogRevenue = round((float) $salesByMonth->get($key, collect())->sum('total_amount'), 2);
 
             return [
-                'label' => $start->copy()->addMonths($i)->format('M Y'),
+                'label' => $month->format('M Y'),
                 'order_revenue' => $orderRevenue,
                 'catalog_revenue' => $catalogRevenue,
                 'revenue' => round($orderRevenue + $catalogRevenue, 2),
@@ -294,6 +292,36 @@ class DashboardController extends Controller
         $months = (int) $request->query('months', 6);
 
         return in_array($months, [3, 6, 12], true) ? $months : 6;
+    }
+
+    /**
+     * The report window: ?from=YYYY-MM-DD&to=YYYY-MM-DD (a custom range, at most
+     * 24 months), else the last 3/6/12 months up to now. Returns the window and
+     * the first day of each month it touches, for the per-month charts.
+     *
+     * @return array{0: Carbon, 1: Carbon, 2: \Illuminate\Support\Collection<int, Carbon>}
+     */
+    private function reportWindow(Request $request): array
+    {
+        $from = $request->query('from');
+        $to = $request->query('to');
+        $valid = fn ($d) => is_string($d) && preg_match('/^\d{4}-\d{2}-\d{2}$/', $d) && strtotime($d) !== false;
+        if ($valid($from) && $valid($to)) {
+            $start = Carbon::parse($from)->startOfDay();
+            $end = Carbon::parse($to)->endOfDay();
+            if ($end->gte($start) && $start->copy()->addMonths(24)->gte($end)) {
+                $months = collect();
+                for ($m = $start->copy()->startOfMonth(); $m->lte($end); $m->addMonth()) {
+                    $months->push($m->copy());
+                }
+
+                return [$start, $end, $months];
+            }
+        }
+        $count = $this->monthCount($request);
+        $start = Carbon::now()->startOfMonth()->subMonths($count - 1);
+
+        return [$start, Carbon::now()->endOfDay(), collect(range(0, $count - 1))->map(fn (int $i) => $start->copy()->addMonths($i))];
     }
 
     private function activeSubscriptions()

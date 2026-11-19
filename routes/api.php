@@ -536,6 +536,11 @@ Route::prefix('v1')->group(function () {
             Route::post('/stores/{store}/subscription/upgrade-requests/{upgradeRequest}/check', [SubscriptionUpgradeRequestController::class, 'checkOnline'])->middleware('throttle:30,1,plan-payment-check');
             // Cancel a free downgrade that waits for the current period to end.
             Route::delete('/stores/{store}/subscription/scheduled-change', [SubscriptionUpgradeRequestController::class, 'cancelScheduled']);
+            // Items locked by the plan (never deleted): limits, the owner's swap, and a downgrade's preview.
+            Route::get('/stores/{store}/plan-locks', [\App\Http\Controllers\Api\V1\PlanLockController::class, 'index']);
+            Route::get('/stores/{store}/plan-locks/preview', [\App\Http\Controllers\Api\V1\PlanLockController::class, 'preview']);
+            Route::post('/stores/{store}/plan-locks/{type}/{id}/unlock', [\App\Http\Controllers\Api\V1\PlanLockController::class, 'unlock'])
+                ->whereIn('type', ['branch', 'staff', 'service'])->whereNumber('id');
             Route::put('/stores/{store}', [StoreController::class, 'update']);
         });
 

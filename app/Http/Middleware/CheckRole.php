@@ -71,6 +71,17 @@ class CheckRole
                     'message' => 'Unauthorized. You do not belong to this store.',
                 ], 403);
             }
+
+            // A staff account locked by the shop's plan (App\Support\PlanLimits)
+            // can still sign in and look, but not change anything.
+            if (! $user->hasRole('store_owner') && $user->staffProfile?->plan_locked_at
+                && ! in_array($request->method(), ['GET', 'HEAD', 'OPTIONS'], true)) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'plan_locked',
+                    'message' => "Your account is view-only: the shop's plan doesn't include it right now. Ask the shop owner.",
+                ], 403);
+            }
         }
 
         return $next($request);

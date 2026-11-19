@@ -50,6 +50,35 @@ class SubscriptionUpgradeRequestController extends Controller
         ]);
     }
 
+    /** Version of the downgrade terms shown on Billing (bump when their wording changes). */
+    public const DOWNGRADE_TERMS_VERSION = '2026-11-20-2';
+
+    /** A downgrade can't be paid for until the owner agrees to its terms. */
+    private static function downgradeTermsMissing(Request $request, string $kind): ?JsonResponse
+    {
+        if ($kind !== 'downgrade' || $request->boolean('accept_terms')) {
+            return null;
+        }
+
+        return response()->json([
+            'success' => false,
+            'message' => 'Please read and accept the downgrade terms before paying.',
+            'errors' => ['accept_terms' => ['Accept the downgrade terms to continue.']],
+        ], 422);
+    }
+
+    /** Records, on the payment's history, that the owner accepted the downgrade terms (and what they said). */
+    private static function logTermsAccepted(SubscriptionUpgradeRequest $payment, Store $store, SubscriptionPlan $plan, string $kind, int $userId): void
+    {
+        if ($kind !== 'downgrade') {
+            return;
+        }
+        $current = SubscriptionSwitcher::current($store);
+        $on = $current?->ends_at?->timezone('Asia/Manila')->format('M j, Y');
+        $payment->log('terms_accepted', $userId, 'Accepted the downgrade terms (v'.self::DOWNGRADE_TERMS_VERSION.'): stays on '
+            .($current?->plan?->name ?? 'the current plan').($on ? " until {$on}" : '').", then moves to {$plan->name}.");
+    }
+
     public function store(Request $request, Store $store): JsonResponse
     {
         if (! $this->ownsStore($request, $store)) {
@@ -67,6 +96,8 @@ class SubscriptionUpgradeRequestController extends Controller
             'amount_sent' => ['required', 'numeric', 'min:1', 'max:1000000'],
             'paid_at' => ['required', 'date'],
             'payment_receipt' => ['required', 'image', 'mimes:jpg,jpeg,png,webp', 'max:5120'],
+            // A downgrade needs the owner's agreement to its terms (Billing shows them first).
+            'accept_terms' => ['nullable', 'boolean'],
         ], [
             'payment_reference.regex' => 'The GCash reference number can only have letters, numbers, spaces and dashes.',
             'sender_number.regex' => 'Enter the GCash number you paid from: 11 digits starting with 09.',
@@ -81,9 +112,7 @@ class SubscriptionUpgradeRequestController extends Controller
             ], 422);
         }
 
-        if ($error = SubscriptionSwitcher::misfit($store, $plan)) {
-            return response()->json(['success' => false, 'message' => $error], 422);
-        }
+        // Over the new plan's limits is fine: the extra is locked on the switch, never refused (PlanLimits).
 
         // A paid downgrade is already queued: that period is paid for.
         if (SubscriptionSwitcher::current($store)?->scheduled_payment_id) {
@@ -94,6 +123,9 @@ class SubscriptionUpgradeRequestController extends Controller
         }
 
         $kind = SubscriptionSwitcher::kind($store, $plan);
+        if ($refused = self::downgradeTermsMissing($request, $kind)) {
+            return $refused;
+        }
         // Amount due always comes from the plan, never from the form.
         $price = $validated['billing_cycle'] === 'yearly' ? $plan->price_yearly : $plan->price_monthly;
         $referenceKey = SubscriptionUpgradeRequest::referenceKey($validated['payment_reference'] ?? null);
@@ -133,6 +165,7 @@ class SubscriptionUpgradeRequestController extends Controller
                     'resubmission_of_id' => $resubmits?->id,
                 ]);
                 $payment->log($resubmits ? 'resubmitted' : 'submitted', $request->user()->id, $resubmits ? "Sent again after payment #{$resubmits->id} was rejected." : null);
+                self::logTermsAccepted($payment, $store, $plan, $kind, $request->user()->id);
 
                 return $payment;
             });
@@ -169,20 +202,22 @@ class SubscriptionUpgradeRequestController extends Controller
         $validated = $request->validate([
             'plan_id' => ['required', 'integer', 'exists:subscription_plans,id'],
             'billing_cycle' => ['required', 'in:monthly,yearly'],
+            'accept_terms' => ['nullable', 'boolean'],
         ]);
         $plan = SubscriptionPlan::where('is_active', true)->findOrFail($validated['plan_id']);
 
         if (! SubscriptionSwitcher::needsPayment($store, $plan, $validated['billing_cycle'])) {
             return response()->json(['success' => false, 'message' => 'This plan is free — switch to it directly from Billing.'], 422);
         }
-        if ($error = SubscriptionSwitcher::misfit($store, $plan)) {
-            return response()->json(['success' => false, 'message' => $error], 422);
-        }
+        // Over the new plan's limits is fine: the extra is locked on the switch, never refused (PlanLimits).
         if (SubscriptionSwitcher::current($store)?->scheduled_payment_id) {
             return response()->json(['success' => false, 'message' => 'You already paid for a plan change that starts when your current plan ends. Contact SUTURA support to change it.'], 422);
         }
 
         $kind = SubscriptionSwitcher::kind($store, $plan);
+        if ($refused = self::downgradeTermsMissing($request, $kind)) {
+            return $refused;
+        }
         $price = $validated['billing_cycle'] === 'yearly' ? $plan->price_yearly : $plan->price_monthly;
 
         $payment = DB::transaction(function () use ($request, $store, $plan, $validated, $kind, $price) {
@@ -202,6 +237,11 @@ class SubscriptionUpgradeRequestController extends Controller
             }
 
             if ($reuse) {
+                // Continuing a downgrade checkout: the owner agreed again just now.
+                if (! $reuse->logs()->where('action', 'terms_accepted')->exists()) {
+                    self::logTermsAccepted($reuse, $store, $plan, $kind, $request->user()->id);
+                }
+
                 return $reuse;
             }
             $payment = SubscriptionUpgradeRequest::create([
@@ -216,6 +256,7 @@ class SubscriptionUpgradeRequestController extends Controller
                 'status' => 'pending',
             ]);
             $payment->log('submitted', $request->user()->id, 'Paying with GCash.');
+            self::logTermsAccepted($payment, $store, $plan, $kind, $request->user()->id);
 
             return $payment;
         });

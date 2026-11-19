@@ -37,7 +37,8 @@ class AccountController extends Controller
             $query->whereNull('suspended_at');
         }
 
-        $page = $query->paginate(25);
+        // Page size: ?per_page (5–50), default 25. The admin Accounts page asks for 10.
+        $page = $query->paginate(max(5, min(50, (int) $request->input('per_page', 25))));
 
         return response()->json([
             'success' => true,

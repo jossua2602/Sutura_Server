@@ -193,9 +193,40 @@ class ServiceController extends Controller
         ]);
     }
 
+    /**
+     * The plan's services limit (max_services, -1 = unlimited) on adding a
+     * service or switching one back on. A service the plan locked is opened
+     * with Unlock (which swaps), not by editing it.
+     */
+    private function serviceLimitRefusal(Store $store, ?Service $service, array $validated): ?JsonResponse
+    {
+        $activating = $service
+            ? array_key_exists('is_active', $validated) && $validated['is_active'] && ! $service->is_active
+            : ($validated['is_active'] ?? true);
+        if (! $activating) {
+            return null;
+        }
+        if ($service?->plan_locked_at) {
+            return response()->json(['success' => false, 'message' => 'This service is locked by your plan. Use Unlock to choose which services stay open.'], 422);
+        }
+        $plan = \App\Support\SubscriptionSwitcher::current($store)?->plan;
+        $limit = $plan ? (int) $plan->max_services : -1;
+        if ($limit !== -1 && $store->services()->where('is_active', true)->count() >= $limit) {
+            return response()->json([
+                'success' => false,
+                'message' => "Your {$plan->name} plan allows {$limit} active service".($limit === 1 ? '' : 's').'. Pause another service first, or upgrade.',
+            ], 422);
+        }
+
+        return null;
+    }
+
     public function store(StoreServiceRequest $request, Store $store): JsonResponse
     {
         $validated = $request->validated();
+        if ($refused = $this->serviceLimitRefusal($store, null, $validated)) {
+            return $refused;
+        }
         $tiers = $validated['pricing_tiers'];
         unset($validated['pricing_tiers']);
 
@@ -217,6 +248,9 @@ class ServiceController extends Controller
         }
 
         $validated = $request->validated();
+        if ($refused = $this->serviceLimitRefusal($store, $service, $validated)) {
+            return $refused;
+        }
         $tiers = $validated['pricing_tiers'];
         unset($validated['pricing_tiers']);
         $validated['tags'] = array_column($tiers, 'label');

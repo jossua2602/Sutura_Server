@@ -24,6 +24,13 @@ class StoreController extends Controller
         }
         if ($request->input('visibility') === 'hidden') {
             $query->where('is_hidden', true);
+        } elseif ($request->input('visibility') === 'visible') {
+            // "Active": approved shops customers can see (not hidden by an admin or a lapsed plan).
+            $query->where('is_hidden', false);
+        }
+        // Plan filter: the shop's latest subscription is on this plan (basic | pro | premium).
+        if (in_array($plan = strtolower((string) $request->input('plan')), ['basic', 'pro', 'premium'], true)) {
+            $query->whereHas('subscription.plan', fn ($p) => $p->where('slug', $plan));
         }
         if ($search = trim((string) $request->input('search'))) {
             $term = '%'.strtolower($search).'%';

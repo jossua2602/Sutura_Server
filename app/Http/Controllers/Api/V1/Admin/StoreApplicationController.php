@@ -58,7 +58,8 @@ class StoreApplicationController extends Controller
                 ->orWhereHas('owner', fn ($o) => $o->whereRaw('LOWER(email) LIKE ?', [$term])->orWhereRaw('LOWER(name) LIKE ?', [$term])));
         }
 
-        $page = $query->paginate(20);
+        // Page size: ?per_page (5–50), default 20. The admin Applications page asks for 5.
+        $page = $query->paginate(max(5, min(50, (int) $request->input('per_page', 20))));
 
         return response()->json([
             'success' => true,

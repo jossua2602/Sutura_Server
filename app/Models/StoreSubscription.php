@@ -22,6 +22,15 @@ class StoreSubscription extends Model
         'expiry_reminder_sent_at' => 'datetime',
     ];
 
+    /**
+     * Set by SubscriptionSwitcher::apply() on an upgrade: whole days carried
+     * over from the old plan, and that plan's name. Plain properties, not
+     * columns, so they are never written to the table.
+     */
+    public int $carried_days = 0;
+
+    public ?string $carried_from_plan = null;
+
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);

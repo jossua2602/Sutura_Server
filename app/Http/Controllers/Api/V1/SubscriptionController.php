@@ -80,9 +80,7 @@ class SubscriptionController extends Controller
 
         $store = Store::findOrFail($storeId);
 
-        if ($error = SubscriptionSwitcher::misfit($store, $plan)) {
-            return response()->json(['success' => false, 'message' => $error], 422);
-        }
+        // Over the new plan's limits is fine: the extra is locked on the switch, never refused (PlanLimits).
 
         // Moving up to (or renewing) a paid plan takes a real payment: the owner
         // sends GCash and submits the receipt as an upgrade request, and an admin

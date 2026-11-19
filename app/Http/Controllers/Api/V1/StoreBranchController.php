@@ -274,6 +274,20 @@ class StoreBranchController extends Controller
 
         $before = $branch->only(['address', 'barangay', 'city', 'district', 'latitude', 'longitude']);
 
+        // Switching a branch shop back on: never one the plan locked (that's the Unlock
+        // button, which swaps), and never past the plan's branch-shop limit.
+        if (! $branch->is_main && $request->status === 'active' && $branch->status !== 'active') {
+            if ($branch->plan_locked_at) {
+                return response()->json(['success' => false, 'message' => 'This branch shop is locked by your plan. Use Unlock to choose which branch shops stay open.'], 422);
+            }
+            $plan = \App\Support\SubscriptionSwitcher::current($store)?->plan;
+            $limit = $plan ? \App\Support\PlanLimits::limit($plan, 'branch') : 0;
+            $open = $store->branches()->where('is_main', false)->where('status', 'active')->count();
+            if ($limit !== -1 && $open >= $limit) {
+                return response()->json(['success' => false, 'message' => "Your plan allows {$limit} open branch shop".($limit === 1 ? '' : 's').'. Close another one first, or upgrade.'], 422);
+            }
+        }
+
         $branch->update([
             'name' => $request->name,
             'address' => $request->address,

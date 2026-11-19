@@ -10,9 +10,11 @@ class StoreBranch extends Model
         'store_id', 'name', 'slug', 'address', 'street', 'landmark', 'landmark_image_url', 'barangay', 'city', 'district', 'latitude',
         'province', 'province_code', 'city_code', 'district_code', 'barangay_code', 'longitude', 'contact_number', 'is_main', 'operating_hours', 'status', 'guide_image_url',
         'verification_status', 'verified_at', 'verified_by', 'verification_note',
+        // Set when the shop's plan allows fewer branch shops (App\Support\PlanLimits); status is then 'inactive'.
+        'plan_locked_at',
     ];
 
-    protected $casts = ['verified_at' => 'datetime'];
+    protected $casts = ['verified_at' => 'datetime', 'plan_locked_at' => 'datetime'];
 
     /** What the public may see: switched on by the shop AND location-checked by the System Admin. */
     public function scopeLive($query)

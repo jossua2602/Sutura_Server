@@ -14,7 +14,11 @@ use App\Models\SubscriptionPlan;
  */
 class SubscriptionSwitcher
 {
-    /** Why the store's current usage does not fit this plan, or null when it does. */
+    /**
+     * Why the store's current usage does not fit this plan, or null when it does.
+     * A move to a smaller plan doesn't need it anymore — the extra is locked,
+     * not refused (PlanLimits) — so paid plan changes skip it for downgrades.
+     */
     public static function misfit(Store $store, SubscriptionPlan $plan): ?string
     {
         $currentStaffCount = $store->staff()->count();
@@ -152,11 +156,24 @@ class SubscriptionSwitcher
                 'ends_at' => now(),
             ]);
 
-        // Renewing early keeps the days already paid for.
-        $renewing = $previousSubscription && $previousSubscription->ends_at && $previousSubscription->ends_at->isFuture()
-            // A free trial keeps its days whichever plan is paid for: the paid period follows it.
-            && ($previousSubscription->plan_id === $plan->id || $previousSubscription->status === 'trial');
+        // Days still left on the running plan are kept, never thrown away:
+        //  - renewing the same plan early adds the new period after them;
+        //  - a free trial's days carry over whichever plan is paid for;
+        //  - an upgrade (a pricier plan, e.g. Pro → Premium) carries them over
+        //    day for day: Pro with 10 days left + Premium monthly = 40 days of
+        //    Premium, starting now. (A downgrade never gets here early — it is
+        //    scheduled for when the running period ends.)
+        $stillRunning = $previousSubscription && $previousSubscription->ends_at && $previousSubscription->ends_at->isFuture();
+        $previousPlan = $previousSubscription ? SubscriptionPlan::find($previousSubscription->plan_id) : null;
+        $isUpgrade = $previousPlan && $previousPlan->id !== $plan->id
+            && (float) $plan->price_monthly > (float) $previousPlan->price_monthly;
+        $renewing = $stillRunning
+            && ($previousSubscription->plan_id === $plan->id || $previousSubscription->status === 'trial' || $isUpgrade);
         $base = $renewing ? $previousSubscription->ends_at->copy() : now();
+        // Whole days carried over from the old plan on an upgrade (shown to the owner and the admin).
+        $carriedDays = $stillRunning && $isUpgrade && $previousSubscription->status !== 'trial'
+            ? (int) ceil(now()->diffInSeconds($previousSubscription->ends_at, false) / 86400)
+            : 0;
 
         $newSubscription = StoreSubscription::create([
             'store_id' => $store->id,
@@ -194,7 +211,6 @@ class SubscriptionSwitcher
         } elseif ($previousSubscription->plan_id === $plan->id) {
             $eventType = 'renewed';
         } else {
-            $previousPlan = SubscriptionPlan::find($previousSubscription->plan_id);
             $eventType = ($previousPlan && $previousPlan->price_monthly < $plan->price_monthly) ? 'upgraded' : 'downgraded';
         }
 
@@ -208,6 +224,14 @@ class SubscriptionSwitcher
             'triggered_by' => $triggeredBy,
             'occurred_at' => now(),
         ]);
+
+        // Lock what the new plan has no room for (a downgrade), or unlock what now
+        // fits again (an upgrade). Never deletes anything — see PlanLimits.
+        PlanLimits::enforce($store, $plan);
+
+        // Not a column: lets the caller say "+10 days carried over from Pro".
+        $newSubscription->carried_days = $carriedDays;
+        $newSubscription->carried_from_plan = $carriedDays > 0 ? $previousPlan?->name : null;
 
         return $newSubscription;
     }

@@ -71,10 +71,7 @@ class PlatformPayments
 
             $store = $payment->store;
             $plan = $payment->plan;
-            // Usage may have changed since the payment was sent.
-            if ($error = SubscriptionSwitcher::misfit($store, $plan)) {
-                throw ValidationException::withMessages(['payment' => $error]);
-            }
+            // Over the new plan's limits is fine: the extra is locked on the switch, never refused (PlanLimits).
 
             $current = SubscriptionSwitcher::current($store);
             $kind = SubscriptionSwitcher::kind($store, $plan);
@@ -92,10 +89,17 @@ class PlatformPayments
                 $subscription = SubscriptionSwitcher::apply($store, $plan, $payment->billing_cycle, $adminId);
                 $payment->fill(['billing_period_start' => $subscription->ends_at->copy()->subDays($days), 'billing_period_end' => $subscription->ends_at]);
                 $until = $subscription->ends_at->timezone('Asia/Manila')->format('M j, Y');
-                $message = $kind === 'renewal' ? "{$store->name}’s {$plan->name} plan now runs until {$until}." : "{$store->name} is now on {$plan->name} until {$until}.";
+                // An upgrade keeps the days left on the old plan (SubscriptionSwitcher::apply).
+                $carried = $subscription->carried_days > 0
+                    ? " (includes {$subscription->carried_days} ".($subscription->carried_days === 1 ? 'day' : 'days')." carried over from {$subscription->carried_from_plan})"
+                    : '';
+                $message = $kind === 'renewal' ? "{$store->name}’s {$plan->name} plan now runs until {$until}." : "{$store->name} is now on {$plan->name} until {$until}{$carried}.";
                 $ownerMessage = $kind === 'renewal'
                     ? "Your payment was confirmed. {$store->name}’s {$plan->name} plan now runs until {$until}."
-                    : "Your payment was confirmed. {$store->name} is now on the {$plan->name} plan until {$until}.";
+                    : "Your payment was confirmed. {$store->name} is now on the {$plan->name} plan until {$until}{$carried}.";
+                if ($subscription->carried_days > 0) {
+                    $payment->log('days_carried_over', $adminId, "{$subscription->carried_days} days left on {$subscription->carried_from_plan} were added to {$plan->name}.");
+                }
             }
 
             $payment->fill([
