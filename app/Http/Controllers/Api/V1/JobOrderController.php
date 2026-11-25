@@ -1412,7 +1412,9 @@ class JobOrderController extends Controller
             // The required share is this job's snapshotted payment policy
             // (none / full / deposit / custom percent), not a fixed 50%.
             $fraction = $jobOrder->requiredDepositFraction();
-            if ($jobOrder->requiresDownpaymentFor($newStatus) && $amountDue > 0 && $paidSoFar + 0.005 < ($amountDue * $fraction)) {
+            // A rush fee added on approval sits on the balance, not the deposit (depositBase()).
+            $depositBase = $jobOrder->depositBase();
+            if ($jobOrder->requiresDownpaymentFor($newStatus) && $amountDue > 0 && $paidSoFar + 0.005 < ($depositBase * $fraction)) {
                 $label = $fraction >= 1 ? 'The full payment' : 'A '.(int) round($fraction * 100).'% downpayment';
                 return response()->json([
                     'success' => false,
@@ -2251,6 +2253,9 @@ class JobOrderController extends Controller
         $validated = $request->validate([
             'due_date' => [$jobOrder->due_date ? 'nullable' : 'required', 'date', 'after_or_equal:today'],
             'assigned_staff_id' => ['nullable', 'integer', 'exists:users,id'],
+            // Take it as a rush order (the customer may have asked for it when ordering).
+            'rush' => ['nullable', 'boolean'],
+            'rush_fee' => ['nullable', 'numeric', 'min:0', 'max:9999999'],
         ], [
             'due_date.required' => 'Set a due date before approving this order.',
             'due_date.after_or_equal' => 'The due date can\'t be in the past.',
@@ -2275,7 +2280,49 @@ class JobOrderController extends Controller
             $changes['assigned_to'] = (int) $validated['assigned_staff_id'];
         }
 
-        $jobOrder->update($changes);
+        // Rush: the fee goes on top of what is left to pay (total and balance both grow by
+        // it); what the customer already paid and the deposit they met stay as they were.
+        $rushFee = null;
+        if ($request->boolean('rush') && ! $jobOrder->is_rush) {
+            if ($request->filled('rush_fee')) {
+                $rushFee = round((float) $validated['rush_fee'], 2);
+            } else {
+                // Same default as a walk-in rush order: 30%, or 15% for a repeat customer (3+ orders).
+                $priorJobCount = JobOrder::where('store_id', $jobOrder->store_id)->where('customer_id', $jobOrder->customer_id)->count();
+                $rushFee = round((float) $jobOrder->total_amount * ($priorJobCount >= 3 ? 0.15 : 0.30), 2);
+            }
+        }
+
+        DB::transaction(function () use ($jobOrder, $changes, $rushFee, $store, $request) {
+            $locked = JobOrder::where('id', $jobOrder->id)->lockForUpdate()->firstOrFail();
+            if ($rushFee !== null) {
+                $changes['is_rush'] = true;
+                $changes['rush_fee'] = $rushFee;
+                if ($rushFee > 0) {
+                    $changes['total_amount'] = round((float) $locked->total_amount + $rushFee, 2);
+                    $changes['balance'] = round((float) $locked->balance + $rushFee, 2);
+                    if ($locked->payment_status === 'paid') {
+                        $changes['payment_status'] = 'partial';
+                    }
+                    $data = $locked->custom_order_data ?? [];
+                    $data['rush_fee_on_balance'] = number_format($rushFee, 2, '.', '');
+                    $changes['custom_order_data'] = $data;
+                }
+            }
+            $locked->update($changes);
+
+            if ($rushFee !== null) {
+                $store->auditLogs()->create([
+                    'user_id' => $request->user()->id,
+                    'action' => 'rush_fee_applied',
+                    'model_type' => JobOrder::class,
+                    'model_id' => $locked->id,
+                    'payload' => ['rush_fee' => $rushFee, 'added_to' => 'balance', 'on' => 'approval'],
+                    'ip_address' => $request->ip(),
+                ]);
+            }
+        });
+        $jobOrder->refresh();
 
         $jobOrder->customer?->notify(new JobStatusUpdatedNotification($jobOrder, 'approved', $request->user()));
 

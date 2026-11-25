@@ -32,6 +32,15 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // A new in-app notification clears that person's cached bell list
+        // (NotificationController::index caches it for 15s), so every bell
+        // (shop, customer) shows it on its next poll instead of up to 15s later.
+        Event::listen(\Illuminate\Notifications\Events\NotificationSent::class, function ($event) {
+            if ($event->channel === 'database' && isset($event->notifiable->id)) {
+                \Illuminate\Support\Facades\Cache::driver('file')->forget("user_notifications_{$event->notifiable->id}");
+            }
+        });
+
         // Enforce 191-character default string length so MariaDB / MySQL on XAMPP
         // does not exceed the 1000-byte index limit on utf8mb4 unique/primary keys.
         Schema::defaultStringLength(191);

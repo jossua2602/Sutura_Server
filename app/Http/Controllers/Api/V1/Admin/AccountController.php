@@ -28,8 +28,10 @@ class AccountController extends Controller
             $term = '%'.strtolower($search).'%';
             $query->where(fn ($q) => $q->whereRaw('LOWER(name) LIKE ?', [$term])->orWhereRaw('LOWER(email) LIKE ?', [$term]));
         }
+        // One role, or several comma-separated (the Staff tab sends "staff,branch_manager").
         if ($role = $request->input('role')) {
-            $query->whereHas('roles', fn ($q) => $q->where('name', $role));
+            $roles = array_values(array_filter(array_map('trim', explode(',', (string) $role))));
+            $query->whereHas('roles', fn ($q) => $q->whereIn('name', $roles));
         }
         if ($request->input('status') === 'suspended') {
             $query->whereNotNull('suspended_at');

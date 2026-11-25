@@ -469,7 +469,10 @@ class StoreController extends Controller
                 }
             },
             'services' => function ($q) use ($inPrice) {
-                $q->where('is_active', true)->withCount('reviews')->withAvg('reviews', 'rating');
+                // Saves + orders feed the landing's Featured Shops service tiles ("N sold", heart count).
+                $q->where('is_active', true)
+                    ->withCount(['reviews', 'saves', 'jobOrders as orders_count' => fn ($jq) => $jq->whereNull('service_package_id')])
+                    ->withAvg('reviews', 'rating');
                 $inPrice($q, 'base_price');
             },
             'owner:id,name',

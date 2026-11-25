@@ -313,6 +313,19 @@ class JobOrder extends Model
         return $this->requiredDepositFraction() > 0;
     }
 
+    /**
+     * What the deposit rule is measured against: the total, minus discounts, minus a
+     * rush fee the shop added when approving an online order. That fee goes on the
+     * remaining balance (custom_order_data.rush_fee_on_balance), so a deposit the
+     * customer already met when ordering stays met.
+     */
+    public function depositBase(): float
+    {
+        $rushOnBalance = (float) (($this->custom_order_data ?? [])['rush_fee_on_balance'] ?? 0);
+
+        return max(0, (float) $this->total_amount - (float) $this->discount_amount - $rushOnBalance);
+    }
+
     /** Share of the amount due that must be paid before production (snapshotted policy). */
     public function requiredDepositFraction(): float
     {

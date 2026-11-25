@@ -119,7 +119,7 @@ class JobOrderTrackingController extends Controller
                 'pending_payment_amount' => (float) $jobOrder->payments->sum('amount'),
                 'payment_policy' => $jobOrder->payment_policy,
                 'payment_policy_percent' => $jobOrder->payment_policy_percent,
-                'required_deposit' => round($jobOrder->requiredDepositFraction() * ((float) $jobOrder->total_amount - (float) $jobOrder->discount_amount), 2),
+                'required_deposit' => round($jobOrder->requiredDepositFraction() * $jobOrder->depositBase(), 2),
                 'fitting_requirement' => $jobOrder->fitting_requirement,
                 'measurement_requirement' => $jobOrder->measurement_requirement,
                 // "Have the shop measure me" + the visit the shop booked for it (null until booked).
