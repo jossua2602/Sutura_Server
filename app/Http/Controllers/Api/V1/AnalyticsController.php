@@ -175,7 +175,7 @@ class AnalyticsController extends Controller
         ];
 
         if (! app()->environment('testing')) {
-            Cache::driver('file')->put($cacheKey, $responsePayload, 60);
+            Cache::driver('file')->put($cacheKey, self::cacheable($responsePayload), 60);
         }
 
         return response()->json($responsePayload);
@@ -273,7 +273,7 @@ class AnalyticsController extends Controller
         ];
 
         if (! app()->environment('testing')) {
-            Cache::driver('file')->put($cacheKey, $responsePayload, 60);
+            Cache::driver('file')->put($cacheKey, self::cacheable($responsePayload), 60);
         }
 
         return response()->json($responsePayload);
@@ -481,7 +481,7 @@ class AnalyticsController extends Controller
         }
 
         $recentJobs = $branchJobs()
-            ->with('customer')
+            ->with(['customer:id,name', 'service:id,name'])
             ->orderBy('created_at', 'desc')
             ->take(5)
             ->get()
@@ -799,7 +799,7 @@ class AnalyticsController extends Controller
         ];
 
         if (! app()->environment('testing')) {
-            Cache::driver('file')->put($cacheKey, $responsePayload, 60);
+            Cache::driver('file')->put($cacheKey, self::cacheable($responsePayload), 60);
         }
 
         return response()->json($responsePayload);
@@ -857,5 +857,16 @@ class AnalyticsController extends Controller
                 ],
             ],
         ]);
+    }
+
+    /**
+     * The cache refuses to rebuild objects (config/cache.php serializable_classes
+     * = false), so a cached model or date came back as __PHP_Incomplete_Class and
+     * Home showed "Invalid Date", "#undefined" and P0.00 for a minute after each
+     * load. Store the payload exactly as it is sent: plain arrays and strings.
+     */
+    private static function cacheable(array $payload): array
+    {
+        return json_decode(json_encode($payload), true);
     }
 }

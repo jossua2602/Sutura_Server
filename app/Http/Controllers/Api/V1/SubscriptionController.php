@@ -58,6 +58,8 @@ class SubscriptionController extends Controller
             'success' => true,
             'data' => $subscription,
             'staff_usage' => ['used' => $store ? $store->staff()->count() : 0, 'max' => (int) $maxStaff],
+            // No running plan: the shop is view-only (CheckRole refuses changes) until it pays again.
+            'read_only' => $store ? SubscriptionSwitcher::current($store) === null : false,
         ]);
     }
 
@@ -118,6 +120,68 @@ class SubscriptionController extends Controller
             'success' => true,
             'message' => 'Successfully subscribed to '.$plan->name.'.',
             'data' => $newSubscription->load('plan'),
+        ]);
+    }
+
+    /** Keep in step with CancelSubscriptionModal's CANCEL_TERMS_VERSION. */
+    public const CANCEL_TERMS_VERSION = '2026-11-24';
+
+    /**
+     * The owner cancels the running plan. Nothing stops now: the shop keeps
+     * everything until ends_at, then the plan expires as usual
+     * (app:expire-subscriptions) and the shop turns read-only until it pays
+     * again. SUTURA never charges automatically, so "cancel" records the
+     * decision (cancelled_at on the still-running row) and drops a free
+     * downgrade queued for that date. Undo with resume() before the end date.
+     */
+    public function cancel(Request $request, Store $store)
+    {
+        $request->validate([
+            'agree_terms' => 'accepted',
+            'terms_version' => 'required|string|in:'.self::CANCEL_TERMS_VERSION,
+        ], [
+            'agree_terms.accepted' => 'Tick the box to confirm you understand what cancelling means.',
+            'terms_version.in' => 'These terms have changed. Reload the page and review them again.',
+        ]);
+
+        $current = SubscriptionSwitcher::current($store);
+        if (! $current) {
+            return response()->json(['success' => false, 'message' => 'Your shop has no running plan to cancel.'], 422);
+        }
+        if ($current->cancelled_at) {
+            return response()->json(['success' => false, 'message' => 'This plan is already cancelled.'], 422);
+        }
+        if ($current->scheduled_payment_id) {
+            return response()->json(['success' => false, 'message' => 'A paid plan change is waiting for this period to end. Contact SUTURA support to cancel it.'], 422);
+        }
+
+        $current->update([
+            'cancelled_at' => now(),
+            'scheduled_plan_id' => null,
+            'scheduled_billing_cycle' => null,
+        ]);
+        $until = $current->ends_at?->timezone('Asia/Manila')->format('F j, Y') ?? 'the end of your current period';
+
+        return response()->json([
+            'success' => true,
+            'message' => "Subscription cancelled. You keep full access until {$until}.",
+            'data' => $current->fresh(['plan']),
+        ]);
+    }
+
+    /** Undo a cancellation while the plan is still running. */
+    public function resume(Request $request, Store $store)
+    {
+        $current = SubscriptionSwitcher::current($store);
+        if (! $current?->cancelled_at) {
+            return response()->json(['success' => false, 'message' => 'There is no cancellation to undo.'], 422);
+        }
+        $current->update(['cancelled_at' => null]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Cancellation undone. Your '.$current->plan->name.' plan continues.',
+            'data' => $current->fresh(['plan']),
         ]);
     }
 }

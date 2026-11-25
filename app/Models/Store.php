@@ -173,7 +173,8 @@ class Store extends Model
         // makes sense in the context of the specific store that wrote it, and
         // suki_tag (which does live on User) already shows the pitfall of a
         // per-customer field that's meant to be store-specific but isn't.
-        return $this->belongsToMany(User::class, 'store_customers')->withPivot('notes')->withTimestamps();
+        // removed_at: Customers → Remove (see CustomerController::destroy).
+        return $this->belongsToMany(User::class, 'store_customers')->withPivot('notes', 'removed_at')->withTimestamps();
     }
 
     public function jobOrders(): HasMany

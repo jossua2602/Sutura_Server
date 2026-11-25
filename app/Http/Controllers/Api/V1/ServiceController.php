@@ -175,7 +175,7 @@ class ServiceController extends Controller
                 // sibling item-detail lookup already embeds catalog reviews.
                 'reviews' => fn ($q) => $q->with('user:id,name,profile_picture')->latest(),
             ])
-            ->get(['id', 'name', 'description', 'categories', 'service_types', 'service_category', 'showcase_category', 'service_leaf_type', 'base_price', 'sale_price', 'sale_starts_at', 'sale_ends_at', 'estimated_days', 'estimated_days_max', 'min_order_qty', 'own_fabric_deduction', 'is_active', 'image_url', 'custom_fields', 'size_chart_image_url', 'size_chart_columns', 'size_chart_rows', 'measurement_requirement', 'fitting_requirement', 'payment_policy', 'payment_policy_percent'])
+            ->get(['id', 'name', 'description', 'categories', 'service_types', 'service_category', 'showcase_category', 'service_leaf_type', 'base_price', 'sale_price', 'sale_starts_at', 'sale_ends_at', 'estimated_days', 'estimated_days_max', 'min_order_qty', 'own_fabric_deduction', 'is_active', 'image_url', 'custom_fields', 'size_chart_image_url', 'size_chart_image_urls', 'size_chart_columns', 'size_chart_rows', 'measurement_requirement', 'fitting_requirement', 'payment_policy', 'payment_policy_percent'])
             ->each(function (Service $service) use ($store) {
                 // What an online order of this service will ask of the customer
                 // (measurements, fitting, deposit) — service setting, else the shop default.
@@ -221,6 +221,26 @@ class ServiceController extends Controller
         return null;
     }
 
+    /**
+     * Reference Chart images: size_chart_image_urls is the full list, and
+     * size_chart_image_url mirrors its first entry for anything that reads
+     * only the single field. A client that sends only the single field
+     * (older form) gets a one-image list.
+     */
+    private function withChartImages(array $validated): array
+    {
+        if (array_key_exists('size_chart_image_urls', $validated)) {
+            $urls = array_values(array_filter($validated['size_chart_image_urls'] ?? [], fn ($u) => is_string($u) && trim($u) !== ''));
+            $validated['size_chart_image_urls'] = $urls ?: null;
+            $validated['size_chart_image_url'] = $urls[0] ?? null;
+        } elseif (array_key_exists('size_chart_image_url', $validated)) {
+            $url = $validated['size_chart_image_url'];
+            $validated['size_chart_image_urls'] = $url ? [$url] : null;
+        }
+
+        return $validated;
+    }
+
     public function store(StoreServiceRequest $request, Store $store): JsonResponse
     {
         $validated = $request->validated();
@@ -234,6 +254,7 @@ class ServiceController extends Controller
         // displays (service cards, job-order service picker) keep working
         // without having to join against pricing on every read.
         $validated['tags'] = array_column($tiers, 'label');
+        $validated = $this->withChartImages($validated);
 
         $service = $store->services()->create($validated);
         $this->syncPricingTiers($service, $tiers);
@@ -254,6 +275,7 @@ class ServiceController extends Controller
         $tiers = $validated['pricing_tiers'];
         unset($validated['pricing_tiers']);
         $validated['tags'] = array_column($tiers, 'label');
+        $validated = $this->withChartImages($validated);
 
         $service->update($validated);
 
@@ -267,7 +289,10 @@ class ServiceController extends Controller
         // "markup disguised as a discount" — but the owner's dashboard would
         // still show that stale number as if a sale were configured. Clear
         // it here so the data itself stays consistent, not just its display.
-        if ($service->sale_price !== null && (float) $service->sale_price >= (float) $service->base_price) {
+        if ($service->sale_percent) {
+            // A discount is a percentage: keep its sale_price on the new base price.
+            $service->update(['sale_price' => round((float) $service->base_price * (100 - $service->sale_percent) / 100, 2)]);
+        } elseif ($service->sale_price !== null && (float) $service->sale_price >= (float) $service->base_price) {
             $service->update(['sale_price' => null, 'sale_starts_at' => null, 'sale_ends_at' => null]);
         }
 
@@ -276,6 +301,52 @@ class ServiceController extends Controller
         $paused = $service->is_active ? [] : $service->pausePackagesLeftTooSmall();
 
         return response()->json(['success' => true, 'data' => $service->fresh('pricing'), 'paused_packages' => $paused]);
+    }
+
+    /**
+     * Services → Discount: a percentage off this service (every price tier)
+     * between two dates, Manila days inclusive. Customers see it on the
+     * storefront until it ends; job pricing applies it while it runs.
+     */
+    public function setDiscount(Request $request, Store $store, Service $service): JsonResponse
+    {
+        if ($service->store_id !== $store->id) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+        $validated = $request->validate([
+            'percent' => ['required', 'integer', 'min:1', 'max:90'],
+            'starts_on' => ['required', 'date_format:Y-m-d'],
+            'ends_on' => ['required', 'date_format:Y-m-d', 'after_or_equal:starts_on', 'after_or_equal:'.now('Asia/Manila')->toDateString()],
+        ], [
+            'ends_on.after_or_equal' => 'The end date must be today or later, and not before the start date.',
+        ]);
+        if ($service->base_price === null || (float) $service->base_price <= 0) {
+            return response()->json(['success' => false, 'message' => 'Set a price for this service before adding a discount.'], 422);
+        }
+
+        $service->update([
+            'sale_percent' => $validated['percent'],
+            'sale_price' => round((float) $service->base_price * (100 - $validated['percent']) / 100, 2),
+            'sale_starts_at' => $validated['starts_on'],
+            'sale_ends_at' => $validated['ends_on'],
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => "{$validated['percent']}% off {$service->name} is set.",
+            'data' => $service->fresh('pricing'),
+        ]);
+    }
+
+    /** End a discount now (the price goes back to normal everywhere). */
+    public function removeDiscount(Store $store, Service $service): JsonResponse
+    {
+        if ($service->store_id !== $store->id) {
+            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+        }
+        $service->update(['sale_percent' => null, 'sale_price' => null, 'sale_starts_at' => null, 'sale_ends_at' => null]);
+
+        return response()->json(['success' => true, 'message' => "Discount removed from {$service->name}.", 'data' => $service->fresh('pricing')]);
     }
 
     /**

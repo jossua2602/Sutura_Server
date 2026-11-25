@@ -3,6 +3,7 @@
 namespace App\Http\Middleware;
 
 use App\Models\Store;
+use App\Support\SubscriptionSwitcher;
 use Closure;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -82,8 +83,33 @@ class CheckRole
                     'message' => "Your account is view-only: the shop's plan doesn't include it right now. Ask the shop owner.",
                 ], 403);
             }
+
+            // A live shop with no running plan (it ran out, was cancelled, or a
+            // trial ended unpaid) is read-only for everyone in it: every record
+            // stays viewable and exportable, nothing new or changed until it pays.
+            // Billing stays open so it can pay, and Support so it can ask for help.
+            if (! in_array($request->method(), ['GET', 'HEAD', 'OPTIONS'], true)
+                && $store->status === 'approved'
+                && ! $this->openWhileReadOnly($request)
+                && SubscriptionSwitcher::current($store) === null) {
+                return response()->json([
+                    'success' => false,
+                    'code' => 'shop_read_only',
+                    'message' => $user->hasRole('store_owner')
+                        ? 'Your shop is read-only because its plan has ended. Choose a plan in Billing to make changes again.'
+                        : "This shop is read-only because its plan has ended. Ask the shop owner to renew it.",
+                ], 403);
+            }
         }
 
         return $next($request);
+    }
+
+    /** Routes a read-only shop can still use: paying for a plan (Billing) and Support tickets. */
+    private function openWhileReadOnly(Request $request): bool
+    {
+        $uri = (string) $request->route()?->uri();
+
+        return str_contains($uri, '{store}/subscription') || str_contains($uri, '{store}/tickets');
     }
 }

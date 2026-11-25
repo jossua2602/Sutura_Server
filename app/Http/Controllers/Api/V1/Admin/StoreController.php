@@ -54,6 +54,84 @@ class StoreController extends Controller
         ]);
     }
 
+    /**
+     * Pins for the admin Shops map: one per live branch (active + verified,
+     * the same set the public /map shows) of every active shop (approved,
+     * visible to customers), with the shop's current plan. A shop with no live
+     * pinned branch falls back to its own location so it never drops off the map.
+     * Unpaginated on purpose: the map shows them all at once.
+     */
+    public function map(Request $request): JsonResponse
+    {
+        $query = Store::query()
+            ->select(['id', 'name', 'slug', 'logo_path', 'operating_hours', 'address', 'city', 'province', 'latitude', 'longitude'])
+            ->with([
+                'subscription.plan:id,name,slug',
+                'branches' => fn ($b) => $b->live()
+                    ->whereNotNull('latitude')->whereNotNull('longitude')
+                    ->select(['id', 'store_id', 'name', 'is_main', 'address', 'barangay', 'district', 'city', 'province', 'latitude', 'longitude'])
+                    ->orderByDesc('is_main')->orderBy('name'),
+            ])
+            ->where('status', 'approved')
+            ->where('is_hidden', false);
+
+        if (in_array($plan = strtolower((string) $request->input('plan')), ['basic', 'pro', 'premium'], true)) {
+            $query->whereHas('subscription.plan', fn ($p) => $p->where('slug', $plan));
+        }
+        if ($search = trim((string) $request->input('search'))) {
+            $term = '%'.strtolower($search).'%';
+            $query->where(fn ($q) => $q->whereRaw('LOWER(name) LIKE ?', [$term])
+                ->orWhereRaw('LOWER(city) LIKE ?', [$term]));
+        }
+
+        $pins = $query->orderBy('name')->get()->flatMap(function (Store $s) {
+            $shop = [
+                'store_id' => $s->id,
+                'name' => $s->name,
+                'slug' => $s->slug,
+                // Logo + hours draw the same pin as the public /map (logo avatar, open/closed dot).
+                'logo_path' => $s->logo_path,
+                'operating_hours' => $s->operating_hours,
+                'plan' => $s->subscription?->plan?->name,
+                'plan_slug' => $s->subscription?->plan?->slug,
+                'subscription_status' => $s->subscription?->status,
+            ];
+
+            if ($s->branches->isNotEmpty()) {
+                return $s->branches->map(fn ($b) => $shop + [
+                    'key' => 'branch-'.$b->id,
+                    'branch_name' => $b->name,
+                    'is_main' => (bool) $b->is_main,
+                    'address' => $b->address,
+                    'barangay' => $b->barangay,
+                    'district' => $b->district,
+                    'city' => $b->city,
+                    'province' => $b->province,
+                    'latitude' => (float) $b->latitude,
+                    'longitude' => (float) $b->longitude,
+                ]);
+            }
+            if ($s->latitude === null || $s->longitude === null) {
+                return [];
+            }
+
+            return [$shop + [
+                'key' => 'store-'.$s->id,
+                'branch_name' => null,
+                'is_main' => true,
+                'address' => $s->address,
+                'barangay' => null,
+                'district' => null,
+                'city' => $s->city,
+                'province' => $s->province,
+                'latitude' => (float) $s->latitude,
+                'longitude' => (float) $s->longitude,
+            ]];
+        })->values();
+
+        return response()->json(['success' => true, 'data' => $pins]);
+    }
+
     public function approve(ApproveStoreRequest $request, Store $store): JsonResponse
     {
         $store->update([

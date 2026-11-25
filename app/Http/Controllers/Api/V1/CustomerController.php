@@ -69,6 +69,8 @@ class CustomerController extends Controller
             $customerIds = $customerIds->intersect($mine->unique())->values();
         }
 
+        $customerIds = $this->withoutRemoved($store, collect($customerIds));
+
         // Store-specific notes live on the store_customers pivot, not the User
         // row — fetched once here (keyed by user id) rather than per-customer,
         // same N+1-avoidance reasoning as the jobOrders/appointments eager loads.
@@ -243,6 +245,9 @@ class CustomerController extends Controller
         if ($digitsPhone && str_starts_with($digitsPhone, '63') && strlen($digitsPhone) === 12) {
             $digitsPhone = '0'.substr($digitsPhone, 2);
         }
+        if ($rawPhone && ! preg_match('/^09\d{9}$/', $digitsPhone)) {
+            return $this->invalidPhoneResponse();
+        }
 
         // The email and number staff type for a walk-in are only where order
         // updates go — not a login. So:
@@ -292,15 +297,16 @@ class CustomerController extends Controller
                 'email' => 'walkin_'.time().'_'.Str::random(6).self::SUTURA_DOMAIN,
                 'contact_email' => $rawEmail,
                 'name' => $validated['name'],
-                'phone' => $rawPhone,
+                'phone' => $digitsPhone,
                 'suki_tag' => $validated['suki_tag'] ?? null,
                 'password' => Hash::make(Str::random(32)),
             ]);
         }
 
         // Attach to store if not already attached, updating notes on pivot
+        // Adding a removed customer again brings them back (removed_at cleared).
         $store->customers()->syncWithoutDetaching([
-            $user->id => ['notes' => $validated['notes'] ?? null],
+            $user->id => ['notes' => $validated['notes'] ?? null, 'removed_at' => null],
         ]);
 
         $userJobs = $user->jobOrders()->where('store_id', $store->id)->get();
@@ -339,6 +345,16 @@ class CustomerController extends Controller
             'suki_tag' => 'nullable|string|max:50',
             'notes' => 'nullable|string|max:2000',
         ]);
+
+        // Same rule as store(): an 11-digit PH mobile, "+63 917…" saved as "0917…".
+        $digits = preg_replace('/\D/', '', $validated['phone']);
+        if (str_starts_with($digits, '63') && strlen($digits) === 12) {
+            $digits = '0'.substr($digits, 2);
+        }
+        if (! preg_match('/^09\d{9}$/', $digits)) {
+            return $this->invalidPhoneResponse();
+        }
+        $validated['phone'] = $digits;
 
         // A walk-in (placeholder login) has no login to change: the email field
         // is only where their order updates go, so it edits contact_email and
@@ -421,20 +437,56 @@ class CustomerController extends Controller
         // job creation (Isabelle, Michael, Carlo in this store's real data) never
         // gets a pivot row at all, so clicking Delete on a customer clearly
         // visible in the list 404'd with "Customer not found in this store."
-        if (! $store->customers()->where('user_id', $customer->id)->exists() && ! $store->jobOrders()->where('customer_id', $customer->id)->exists()) {
+        if (! $store->customers()->where('user_id', $customer->id)->exists()
+            && ! $store->jobOrders()->where('customer_id', $customer->id)->exists()
+            && ! $store->appointments()->where('customer_id', $customer->id)->exists()) {
             return response()->json(['message' => self::MSG_NOT_FOUND], 404);
         }
 
-        // Detach instead of deleting the user, since user might exist in other
-        // stores. A customer with no pivot row (only reachable via job_orders)
-        // has nothing to detach — that's expected, not an error: their real
-        // order history keeps them in the list regardless, the same way a
-        // completed job order can't be erased from view either.
-        $store->customers()->detach($customer->id);
+        // Hide, don't delete: the user may belong to other shops, and their
+        // appointments/orders here stay as they were. Detaching alone wasn't
+        // enough — index() also lists anyone with an appointment or order, so a
+        // removed customer with history came straight back. removed_at hides
+        // them until they book or order again (see withoutRemoved()).
+        $store->customers()->syncWithoutDetaching([$customer->id => ['removed_at' => now()]]);
 
         return response()->json([
             'success' => true,
             'message' => 'Customer removed successfully.',
         ]);
+    }
+
+    /**
+     * Drops customers the shop removed (store_customers.removed_at), unless
+     * they came back afterwards: an appointment or order made after the
+     * removal lists them again. Their history itself is never touched.
+     */
+    private function withoutRemoved(Store $store, \Illuminate\Support\Collection $ids): \Illuminate\Support\Collection
+    {
+        $removed = $store->customers()->wherePivotNotNull('removed_at')->pluck('store_customers.removed_at', 'users.id');
+        if ($removed->isEmpty()) {
+            return $ids;
+        }
+
+        $latest = fn ($query) => $query->whereIn('customer_id', $removed->keys())
+            ->selectRaw('customer_id, MAX(created_at) as last_at')->groupBy('customer_id')->pluck('last_at', 'customer_id');
+        $lastAppt = $latest($store->appointments()->getQuery());
+        $lastJob = $latest($store->jobOrders()->getQuery());
+
+        return $ids->reject(function ($id) use ($removed, $lastAppt, $lastJob) {
+            if (! isset($removed[$id])) {
+                return false;
+            }
+            $cameBack = max((string) ($lastAppt[$id] ?? ''), (string) ($lastJob[$id] ?? ''));
+
+            return $cameBack === '' || $cameBack <= (string) $removed[$id];
+        })->values();
+    }
+
+    private function invalidPhoneResponse(): JsonResponse
+    {
+        $message = 'Phone number must be 11 digits starting with 09, e.g. 09171234567.';
+
+        return response()->json(['success' => false, 'message' => $message, 'errors' => ['phone' => [$message]]], 422);
     }
 }

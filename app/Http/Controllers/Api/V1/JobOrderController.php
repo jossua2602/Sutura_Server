@@ -476,6 +476,7 @@ class JobOrderController extends Controller
             'member_measurements' => 'nullable|array|max:500',
             'member_measurements.*' => 'array',
             'member_measurements.*.name' => 'nullable|string|max:100',
+            'member_measurements.*.gender' => 'nullable|in:male,female',
             'member_measurements.*.size' => 'nullable|string|max:50',
             'member_measurements.*.measure_at_shop' => 'nullable|boolean',
             'member_measurements.*.unit' => 'nullable|in:in,cm',
@@ -578,6 +579,7 @@ class JobOrderController extends Controller
                 }
                 $person = array_filter([
                     'name' => trim((string) ($row['name'] ?? '')) ?: null,
+                    'gender' => in_array($row['gender'] ?? null, ['male', 'female'], true) ? $row['gender'] : null,
                     'size' => $hasSize ? $row['size'] : null,
                     'measure_at_shop' => ! empty($row['measure_at_shop']) ? true : null,
                 ]);
@@ -600,7 +602,8 @@ class JobOrderController extends Controller
                     $person['unit'] = ($row['unit'] ?? 'in') === 'cm' ? 'cm' : 'in';
                     $person += $values;
                 }
-                if (! empty($person['name']) || ! empty($person['measure_at_shop']) || $values) {
+                // Gender alone is worth keeping too: it decides the pattern.
+                if (! empty($person['name']) || ! empty($person['gender']) || ! empty($person['measure_at_shop']) || $values) {
                     $members[] = $person;
                 }
             }
@@ -695,7 +698,8 @@ class JobOrderController extends Controller
             }
         }
 
-        $unitPrice = $pricing && $pricing->amount !== null ? (float) $pricing->amount : $service->effectivePrice();
+        // A running discount (Services → Discount) takes the same % off a tier as off the base price.
+        $unitPrice = $pricing && $pricing->amount !== null ? $service->discountedAmount((float) $pricing->amount) : $service->effectivePrice();
         // Own fabric: the service's per-piece deduction comes off the price up front (never below ₱0),
         // so the total and the deposit the customer pays are both on the lower price.
         $fabricEach = $validated['material_source'] === 'customer_supplied'
@@ -1954,7 +1958,7 @@ class JobOrderController extends Controller
 
                 $currentBalance = (float) $locked->balance;
                 if ($discountAmount > $currentBalance) {
-                    throw new \RuntimeException(($isFabric ? 'The fabric deduction' : 'Discount').' cannot exceed the remaining balance (₱'.number_format($currentBalance, 2).').');
+                    throw new \RuntimeException(($isFabric ? 'The fabric / materials deduction' : 'Discount').' cannot exceed the remaining balance (₱'.number_format($currentBalance, 2).').');
                 }
 
                 $newBalance = round($currentBalance - $discountAmount, 2);
@@ -1991,7 +1995,7 @@ class JobOrderController extends Controller
 
         return response()->json([
             'success' => true,
-            'message' => $isFabric ? 'Fabric deduction applied.' : 'Discount applied successfully.',
+            'message' => $isFabric ? 'Fabric / materials deduction applied.' : 'Discount applied successfully.',
             'data' => $jobOrder->fresh(['customer', 'service', 'assignedStaff', 'payments.recordedBy:id,name', 'staffStages']),
         ]);
     }
@@ -2076,7 +2080,7 @@ class JobOrderController extends Controller
                 'id' => $p->id,
                 'job_order_id' => $p->job_order_id,
                 'order_number' => $p->jobOrder?->order_number,
-                'customer' => $p->jobOrder?->customer ? ['name' => $p->jobOrder->customer->name, 'email' => $p->jobOrder->customer->email] : null,
+                'customer' => $p->jobOrder?->customer ? ['name' => $p->jobOrder->customer->name, 'email' => $p->jobOrder->customer->notificationEmail()] : null,
                 'amount' => $p->amount,
                 'payment_type' => $p->type, // deposit | partial | full | balance (labels the receipt card)
                 'payment_method' => $p->payment_method,

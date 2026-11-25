@@ -32,7 +32,10 @@ class AuditLogController extends Controller
         } elseif ($request->input('scope') === 'stores') {
             $query->whereNotNull('store_id');
         }
-        if (in_array($role = $request->input('role'), [...AuditLog::ROLES, 'guest'], true)) {
+        // "Tailoring staff" (the Tailoring Staff Module) = every shop worker account: branch managers and staff.
+        if (($role = $request->input('role')) === 'tailoring_staff') {
+            $query->whereIn('actor_role', ['branch_manager', 'staff']);
+        } elseif (in_array($role, [...AuditLog::ROLES, 'guest'], true)) {
             $query->where('actor_role', $role);
         }
         if ($storeId = (int) $request->input('store_id')) {
@@ -45,7 +48,8 @@ class AuditLogController extends Controller
             $query->whereDate('created_at', '<=', $to);
         }
 
-        $page = $query->paginate(30);
+        // The Activity Log page asks for 10; capped so a caller can't pull the whole log at once.
+        $page = $query->paginate(min(max((int) $request->input('per_page', 30), 1), 100));
 
         return response()->json([
             'success' => true,

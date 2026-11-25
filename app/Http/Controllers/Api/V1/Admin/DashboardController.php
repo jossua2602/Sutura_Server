@@ -31,9 +31,35 @@ class DashboardController extends Controller
             ->groupBy('roles.name')
             ->pluck('total', 'name');
 
+        // Live shops whose current (latest) paid plan or trial ends within the next 7 days,
+        // soonest first. The count is its own query, never derived from the capped list.
+        $expiringQuery = Store::query()
+            ->where('status', 'approved')
+            ->whereHas('subscription', fn ($q) => $q->whereIn('status', ['active', 'trial'])
+                ->where('ends_at', '>', now())
+                ->where('ends_at', '<=', now()->addDays(7)));
+        $expiring = (clone $expiringQuery)
+            ->with(['owner:id,name,email,contact_email', 'subscription.plan:id,name,slug'])
+            ->get(['id', 'name', 'slug', 'owner_id'])
+            ->sortBy(fn (Store $s) => $s->subscription->ends_at)
+            ->take(10)
+            ->map(fn (Store $s) => [
+                'id' => $s->id,
+                'name' => $s->name,
+                'owner' => $s->owner ? ['name' => $s->owner->name, 'email' => $s->owner->contact_email ?? $s->owner->email] : null,
+                'plan' => $s->subscription->plan?->name,
+                'status' => $s->subscription->status,
+                'ends_at' => $s->subscription->ends_at,
+                // Calendar days left: 0 = ends today, 1 = tomorrow.
+                'days_left' => (int) now()->startOfDay()->diffInDays($s->subscription->ends_at->copy()->startOfDay()),
+            ])
+            ->values();
+
         return response()->json([
             'success' => true,
             'data' => [
+                'expiring_subscriptions' => $expiring,
+                'expiring_subscriptions_count' => $expiringQuery->count(),
                 'users' => [
                     'total' => User::count(),
                     'customers' => (int) ($roleCounts['customer'] ?? 0),

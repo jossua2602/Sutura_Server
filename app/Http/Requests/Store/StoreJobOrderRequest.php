@@ -92,6 +92,7 @@ class StoreJobOrderRequest extends FormRequest
             'custom_order_data.personalization_config' => ['nullable', 'array'],
             'custom_order_data.team_roster' => ['nullable', 'array'],
             'custom_order_data.team_roster.*.name' => ['nullable', 'string', 'max:255'],
+            'custom_order_data.team_roster.*.gender' => ['nullable', 'in:male,female'],
             'custom_order_data.team_roster.*.print_name' => ['nullable', 'string', 'max:255'],
             'custom_order_data.team_roster.*.number' => ['nullable', 'string', 'max:100'],
             'custom_order_data.team_roster.*.position' => ['nullable', 'string', 'max:100'],

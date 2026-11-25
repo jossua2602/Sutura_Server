@@ -74,6 +74,8 @@ class StoreServiceRequest extends FormRequest
             'is_active' => ['sometimes', 'boolean'],
             'image_url' => ['nullable', 'string', 'max:2048'],
             'size_chart_image_url' => ['nullable', 'string', 'max:2048'],
+            'size_chart_image_urls' => ['nullable', 'array', 'max:10'],
+            'size_chart_image_urls.*' => ['string', 'max:2048'],
             'size_chart_columns' => ['nullable', 'array'],
             'size_chart_columns.*' => ['string', 'max:100'],
             'size_chart_rows' => ['nullable', 'array'],

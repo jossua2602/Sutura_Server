@@ -40,9 +40,11 @@ class Service extends Model
         // etc, drives Job Order conditional fields) below. See
         // App\Support\CanonicalTaxonomy.
         'service_category', 'showcase_category', 'service_leaf_type',
-        'base_price', 'sale_price', 'sale_starts_at', 'sale_ends_at',
+        'base_price', 'sale_price', 'sale_percent', 'sale_starts_at', 'sale_ends_at',
         'estimated_days', 'estimated_days_max', 'min_order_qty', 'is_active', 'custom_fields', 'roster_fields', 'image_url',
         'size_chart_image_url', 'size_chart_columns', 'size_chart_rows',
+        // Every Reference Chart image, in order; size_chart_image_url mirrors the first.
+        'size_chart_image_urls',
         // Per-piece amount off when the customer brings their own fabric (null = none set).
         'own_fabric_deduction',
         // Set when the shop's plan allows fewer services (App\Support\PlanLimits); is_active is then false.
@@ -52,6 +54,7 @@ class Service extends Model
     protected $casts = [
         'base_price' => 'decimal:2',
         'sale_price' => 'decimal:2',
+        'sale_percent' => 'integer',
         'sale_starts_at' => 'datetime',
         'sale_ends_at' => 'datetime',
         'min_order_qty' => 'integer',
@@ -63,6 +66,7 @@ class Service extends Model
         'tags' => 'array',
         'size_chart_columns' => 'array',
         'size_chart_rows' => 'array',
+        'size_chart_image_urls' => 'array',
         'categories' => 'array',
         'service_types' => 'array',
     ];
@@ -136,37 +140,48 @@ class Service extends Model
     }
 
     /**
-     * The price to actually suggest right now, respecting the optional sale
-     * window.
+     * Whether the sale window covers right now. sale_starts_at/sale_ends_at
+     * only ever carry a bare date (no time) from the Discount form. The app
+     * runs on UTC, but the store is in the Philippines (UTC+8) — comparing the
+     * raw 'datetime' cast (which anchors that bare date at UTC midnight) makes
+     * a sale advertised as "through Aug 10" actually expire at 8am Manila time
+     * on Aug 10. Re-anchor to the store's local day boundaries instead.
      */
+    public function saleWindowOpen(): bool
+    {
+        $now = now();
+        if ($this->sale_starts_at
+            && $now->lt(Carbon::parse($this->sale_starts_at->toDateString(), 'Asia/Manila')->startOfDay())) {
+            return false;
+        }
+        if ($this->sale_ends_at
+            && $now->gt(Carbon::parse($this->sale_ends_at->toDateString(), 'Asia/Manila')->endOfDay())) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /** The price to actually suggest right now, respecting the optional sale window. */
     public function effectivePrice(): float
     {
-        if ($this->sale_price === null || (float) $this->sale_price >= (float) $this->base_price) {
+        if ($this->sale_price === null || (float) $this->sale_price >= (float) $this->base_price || ! $this->saleWindowOpen()) {
             return (float) $this->base_price;
         }
 
-        // sale_starts_at/sale_ends_at only ever carry a bare date (no time)
-        // from the Set Sale Price form. The app runs on UTC, but the store is
-        // in the Philippines (UTC+8) — comparing the raw 'datetime' cast
-        // (which anchors that bare date at UTC midnight) makes a sale
-        // advertised as "through Aug 10" actually expire at 8am Manila time
-        // on Aug 10, and a sale "starting Aug 5" not kick in until 8am
-        // Manila time instead of the start of that day. Re-anchor to the
-        // store's local day boundaries instead.
-        $now = now();
-        if ($this->sale_starts_at) {
-            $startsAt = Carbon::parse($this->sale_starts_at->toDateString(), 'Asia/Manila')->startOfDay();
-            if ($now->lt($startsAt)) {
-                return (float) $this->base_price;
-            }
-        }
-        if ($this->sale_ends_at) {
-            $endsAt = Carbon::parse($this->sale_ends_at->toDateString(), 'Asia/Manila')->endOfDay();
-            if ($now->gt($endsAt)) {
-                return (float) $this->base_price;
-            }
+        return (float) $this->sale_price;
+    }
+
+    /**
+     * A price-tier amount with this service's running discount applied (the
+     * Discount form's percentage takes the same share off every tier).
+     */
+    public function discountedAmount(float $amount): float
+    {
+        if (! $this->sale_percent || ! $this->saleWindowOpen()) {
+            return $amount;
         }
 
-        return (float) $this->sale_price;
+        return round($amount * (100 - $this->sale_percent) / 100, 2);
     }
 }

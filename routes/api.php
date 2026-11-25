@@ -437,6 +437,9 @@ Route::prefix('v1')->group(function () {
                 Route::post('/services', [ServiceController::class, 'store']);
                 Route::put('/services/{service}', [ServiceController::class, 'update']);
                 Route::delete('/services/{service}', [ServiceController::class, 'destroy']);
+                // Services → Discount: % off every tier between two dates (or remove it).
+                Route::put('/services/{service}/discount', [ServiceController::class, 'setDiscount']);
+                Route::delete('/services/{service}/discount', [ServiceController::class, 'removeDiscount']);
 
                 // Ratings lists for the Services / Catalog Analytics tabs, which branch managers see too.
                 Route::get('/service-reviews', [ServiceReviewController::class, 'indexForStore']);
@@ -536,6 +539,9 @@ Route::prefix('v1')->group(function () {
             Route::post('/stores/{store}/subscription/upgrade-requests/{upgradeRequest}/check', [SubscriptionUpgradeRequestController::class, 'checkOnline'])->middleware('throttle:30,1,plan-payment-check');
             // Cancel a free downgrade that waits for the current period to end.
             Route::delete('/stores/{store}/subscription/scheduled-change', [SubscriptionUpgradeRequestController::class, 'cancelScheduled']);
+            // Cancel the running plan (it runs to its end date, then the shop is read-only), or undo that.
+            Route::post('/stores/{store}/subscription/cancel', [SubscriptionController::class, 'cancel'])->middleware('throttle:sensitive-writes');
+            Route::delete('/stores/{store}/subscription/cancel', [SubscriptionController::class, 'resume'])->middleware('throttle:sensitive-writes');
             // Items locked by the plan (never deleted): limits, the owner's swap, and a downgrade's preview.
             Route::get('/stores/{store}/plan-locks', [\App\Http\Controllers\Api\V1\PlanLockController::class, 'index']);
             Route::get('/stores/{store}/plan-locks/preview', [\App\Http\Controllers\Api\V1\PlanLockController::class, 'preview']);
@@ -599,6 +605,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/audit-logs', [AdminAuditLogController::class, 'index']);
 
             Route::get('/stores', [AdminStoreController::class, 'index']);
+            Route::get('/stores/map', [AdminStoreController::class, 'map']);
             Route::put('/stores/{store}/approve', [AdminStoreController::class, 'approve']);
             Route::put('/stores/{store}/reject', [AdminStoreController::class, 'reject']);
 
