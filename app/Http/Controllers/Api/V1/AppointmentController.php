@@ -175,7 +175,7 @@ class AppointmentController extends Controller
     public function cancelMine(Request $request, Appointment $appointment): JsonResponse
     {
         if ($appointment->customer_id !== $request->user()->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "This appointment isn't yours."], 403);
         }
 
         if (! $appointment->canTransitionTo('cancelled')) {
@@ -597,7 +597,7 @@ class AppointmentController extends Controller
         $status = 200;
 
         if ($appointment->store_id !== $store->id) {
-            $error = 'Unauthorized.';
+            $error = "This appointment isn't part of your shop.";
             $status = 403;
         } elseif ($denied = $this->branchAccessDenied($request, $appointment)) {
             return $denied;
@@ -843,7 +843,7 @@ class AppointmentController extends Controller
         $status = 200;
 
         if ($appointment->store_id !== $store->id) {
-            $error = 'Unauthorized.';
+            $error = "This appointment isn't part of your shop.";
             $status = 403;
         } elseif ($denied = $this->branchAccessDenied($request, $appointment)) {
             return $denied;
@@ -980,7 +980,7 @@ class AppointmentController extends Controller
         $status = 200;
 
         if ($appointment->store_id !== $store->id) {
-            $error = 'Unauthorized.';
+            $error = "This appointment isn't part of your shop.";
             $status = 403;
         } elseif ($denied = $this->branchAccessDenied($request, $appointment)) {
             return $denied;
@@ -1037,7 +1037,7 @@ class AppointmentController extends Controller
     public function reject(Request $request, Store $store, Appointment $appointment): JsonResponse
     {
         if ($appointment->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "This appointment isn't part of your shop."], 403);
         }
         if ($denied = $this->branchAccessDenied($request, $appointment)) {
             return $denied;
@@ -1077,7 +1077,7 @@ class AppointmentController extends Controller
     public function assign(Request $request, Store $store, Appointment $appointment): JsonResponse
     {
         if ($appointment->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "This appointment isn't part of your shop."], 403);
         }
         if ($denied = $this->branchAccessDenied($request, $appointment)) {
             return $denied;
@@ -1092,7 +1092,7 @@ class AppointmentController extends Controller
         if ($staffId !== null) {
             $profile = StaffProfile::where('user_id', $staffId)->where('store_id', $store->id)->first();
             if (! $profile) {
-                return response()->json(['success' => false, 'message' => 'That staff member is not part of this store.'], 422);
+                return response()->json(['success' => false, 'message' => "That staff member isn't part of this shop."], 422);
             }
             // A branch appointment is handled by someone from that branch (owner may still pick anyone from the store).
             if ($appointment->store_branch_id && $profile->store_branch_id
@@ -1129,7 +1129,7 @@ class AppointmentController extends Controller
     public function verifyPayment(Request $request, Store $store, Appointment $appointment): JsonResponse
     {
         if ($appointment->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "This appointment isn't part of your shop."], 403);
         }
 
         if ($denied = $this->branchAccessDenied($request, $appointment)) {

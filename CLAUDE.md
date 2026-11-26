@@ -4,38 +4,25 @@ Capstone project, BSIT, STI College Davao. Team: Joshua Wayman A. Arabejo, Jossu
 
 This is the Laravel API. The frontend lives in the sibling `sutura-client` repo (Next.js) — same thesis, separate git history. The full thesis proposal, interview research, and UI design docs live in `sutura-client/` (`suturathesisapproved.txt`, `Tailorshop,Sublimationshop,FashionShop.txt`, etc.) — check there for objectives/scope narrative if you need more than the summary below.
 
-**Scope reference — check these before assuming a feature is done or missing**: `../sutura-client/TASK_DIVISION.md` (lives in the sibling `sutura-client` repo, alongside its other shared thesis reference docs) maps each team member to their owned module — the section that matters here is **Module 3, "Shop Owner Module," owned by Joshua Wayman A. Arabejo** — everything in this repo's Shop Owner-facing work should stay inside that module's boundary, not drift into Customer (Renalyn), Staff (Masudog), or Admin (Bongo) module work. `../sutura-client/REQUIREMENTS.md` has the fuller functional spec. Both go stale fast relative to actual shipped code — trust `app/Models/`/`routes/api.php` over either when they conflict, but check them first for *whose* scope something belongs to before building it.
+**Scope reference — check these before assuming a feature is done or missing**: `../sutura-client/TASK_DIVISION.md` (lives in the sibling `sutura-client` repo, alongside its other shared thesis reference docs) maps each team member to their formal module (Shop Owner: Arabejo, Customer: Bulotano, Staff: Masudog, Admin: Bongo). Use it for the thesis's module split, not to limit who may edit what — the leader works across all modules (see the note under "What SUTURA actually is"). `../sutura-client/REQUIREMENTS.md` has the fuller functional spec. Both go stale fast relative to actual shipped code — trust `app/Models/`/`routes/api.php` over either when they conflict, but check them first for *whose* scope something belongs to before building it.
 
 ## Commit policy
 
 Don't commit after every small task/feature by default — that produces a wall of tiny commits the owner then has to clean up. When working through a list of several small fixes/features in one sitting, batch them and let the owner decide the commit boundaries, unless they've explicitly asked for a commit per item. Ask before committing if it's not already clear from context that they want it committed now.
 
-## Git workflow — branch per module, not direct commits to `main` (as of 2026-08-12)
+## Git workflow — commit directly to `main` (as of 2026-11-26)
 
-**Do not commit or push directly to `main` anymore.** Up through 2026-08-12 all of Joshua's Shop Owner Module work landed straight on `main` (that history stays as-is — don't rewrite it) — the team has since switched to a branch-per-module workflow so `main` stays stable while all four people work in this same repo concurrently. If you're an AI agent picking up work here, check which branch you're on (`git branch --show-current`) before committing:
+Jossua A. Bongo (leader) works on the whole system and commits **directly to `main`** in both `sutura-client` and `sutura-server`. Don't create, suggest or switch to feature branches, and don't sort changes by module for git purposes.
 
-| Branch | Module | Owner |
-|---|---|---|
-| `feature/customer-module` | Customer Module | Bulotano, Renalyn C. |
-| `feature/admin-module` | Administrative System Module | Bongo, Jossua A. |
-| `feature/shop-owner-module` | Shop Owner Module | Arabejo, Joshua Wayman A. |
-| `feature/staff-module` | Tailoring Staff Module | Masudog, Clareynz June A. |
-
-All four already exist on `origin` (both this repo and `sutura-client`), branched from `main` as of 2026-08-12. Workflow:
-1. `git checkout <your feature branch>` — never work directly on `main`.
-2. Commit normally as work progresses.
-3. `git push origin <your feature branch>` — never `git push origin main` directly.
-4. Merge into `main` via a Pull Request on GitHub once a module's work is ready for review, not by pushing straight to `main`.
-5. Periodically merge `main` into your branch (`git merge main`) to pick up other members' merged work and avoid a large stale diff later.
-
-If a task doesn't obviously belong to one of the four modules above, ask the user which branch to use rather than guessing or defaulting to `main`.
+- Commit and push only when asked, straight to `main`.
+- The old `feature/customer-module`, `feature/admin-module`, `feature/shop-owner-module` and `feature/staff-module` branches (created 2026-08-12 for a branch-per-module workflow) are no longer the workflow. Leave them alone; don't merge them or delete them unless asked.
 
 ## What SUTURA actually is
 
 A subscription-tiered (Basic/Pro/Premium), multi-branch platform connecting Davao City tailoring shops with customers: shop owners manage storefronts/staff/orders across branches, customers discover shops by garment specialization on a map and track order production in real time.
 
 > [!NOTE]
-> **Real task division vs. `sutura-client/CLAUDE.md`'s formal branch table:** that table is the formal/academic per-person accountability structure, not the actual hands-on development split. In practice, **Joshua Wayman A. Arabejo develops all three of Shop Owner, Customer Module, and Staff Module himself** (full-stack, AI-assisted) — Renalyn C. Bulotano's real role is documentation/wording for the thesis papers, and Clareynz June A. Masudog's real role is finance/logistics (Claude AI subscription costs, printing/bond-paper for defense materials), not module development. Jossua A. Bongo (leader) develops System Admin. When working across `customer-module` or `staff-module` content/code in this project, treat it as Joshua's own active scope — don't withhold edits on "this is a teammate's module" grounds.
+> **Who does what:** **Jossua A. Bongo (leader) works on the whole system** — every module, frontend and backend, not only System Admin. Joshua Wayman A. Arabejo also develops Shop Owner, Customer and Staff (full-stack, AI-assisted). Renalyn C. Bulotano's real role is documentation/wording for the thesis papers, and Clareynz June A. Masudog's real role is finance/logistics (Claude AI subscription costs, printing/bond-paper for defense materials), not module development. Any module's code is in scope for whoever is working in this session — don't withhold edits on "this is a teammate's module" grounds. The formal module split (Shop Owner: Arabejo, Customer: Bulotano, Staff: Masudog, Admin: Bongo) is for the thesis papers only.
 
 ## The four roles → actual role strings
 

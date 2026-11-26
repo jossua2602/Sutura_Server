@@ -247,7 +247,7 @@ class StoreBranchController extends Controller
     public function update(Request $request, $storeId, StoreBranch $branch)
     {
         if ($branch->store_id != $storeId) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This branch isn't part of your shop."], 403);
         }
 
         if ($denied = $this->branchManagerCrudDenied($request, $branch, $request->has('manager_id'))) {
@@ -348,7 +348,7 @@ class StoreBranchController extends Controller
     public function setMain(Request $request, $storeId, StoreBranch $branch)
     {
         if ($branch->store_id != $storeId) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This branch isn't part of your shop."], 403);
         }
 
         // Reset all branches of this store to is_main = false
@@ -387,7 +387,7 @@ class StoreBranchController extends Controller
     public function destroy(Request $request, $storeId, StoreBranch $branch)
     {
         if ($branch->store_id != $storeId) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This branch isn't part of your shop."], 403);
         }
 
         if ($branch->is_main) {

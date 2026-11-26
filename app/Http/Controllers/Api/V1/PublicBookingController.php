@@ -251,7 +251,7 @@ class PublicBookingController extends Controller
         if (Appointment::hasActiveAppointment($store, $customer->id)) {
             return response()->json([
                 'success' => false,
-                'message' => 'You already have an active appointment at this store. Cancel it first if you want to book a different date.',
+                'message' => 'You already have an active appointment at this shop. Cancel it first if you want to book a different date.',
             ], 409);
         }
 

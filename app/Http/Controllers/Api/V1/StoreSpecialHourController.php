@@ -58,7 +58,7 @@ class StoreSpecialHourController extends Controller
     public function update(Request $request, Store $store, StoreSpecialHour $specialHour): JsonResponse
     {
         if ($specialHour->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This special schedule isn't part of your shop."], 403);
         }
 
         $validated = $request->validate([
@@ -84,7 +84,7 @@ class StoreSpecialHourController extends Controller
     public function destroy(Store $store, StoreSpecialHour $specialHour): JsonResponse
     {
         if ($specialHour->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This special schedule isn't part of your shop."], 403);
         }
 
         $specialHour->delete();

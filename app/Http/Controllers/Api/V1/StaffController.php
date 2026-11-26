@@ -151,7 +151,7 @@ class StaffController extends Controller
     public function show(Request $request, Store $store, StaffProfile $staff): JsonResponse
     {
         if ($staff->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This staff member isn't part of your shop."], 403);
         }
 
         $user = $request->user();
@@ -306,7 +306,7 @@ class StaffController extends Controller
     public function update(UpdateStaffRequest $request, Store $store, StaffProfile $staff): JsonResponse
     {
         if ($staff->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This staff member isn't part of your shop."], 403);
         }
 
         $targetBranchId = $request->has('store_branch_id') ? (int) $request->store_branch_id : $staff->store_branch_id;
@@ -342,7 +342,7 @@ class StaffController extends Controller
     public function destroy(Request $request, Store $store, StaffProfile $staff): JsonResponse
     {
         if ($staff->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This staff member isn't part of your shop."], 403);
         }
 
         if ($denied = $this->staffManagerCrudDenied($request, (int) $staff->store_branch_id, false, $staff)) {

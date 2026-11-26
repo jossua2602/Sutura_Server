@@ -265,7 +265,7 @@ class ServiceController extends Controller
     public function update(StoreServiceRequest $request, Store $store, Service $service): JsonResponse
     {
         if ($service->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This service isn't part of your shop."], 403);
         }
 
         $validated = $request->validated();
@@ -311,7 +311,7 @@ class ServiceController extends Controller
     public function setDiscount(Request $request, Store $store, Service $service): JsonResponse
     {
         if ($service->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This service isn't part of your shop."], 403);
         }
         $validated = $request->validate([
             'percent' => ['required', 'integer', 'min:1', 'max:90'],
@@ -342,7 +342,7 @@ class ServiceController extends Controller
     public function removeDiscount(Store $store, Service $service): JsonResponse
     {
         if ($service->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This service isn't part of your shop."], 403);
         }
         $service->update(['sale_percent' => null, 'sale_price' => null, 'sale_starts_at' => null, 'sale_ends_at' => null]);
 
@@ -367,7 +367,7 @@ class ServiceController extends Controller
     public function destroy(Request $request, Store $store, Service $service): JsonResponse
     {
         if ($service->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This service isn't part of your shop."], 403);
         }
 
         // Same accountability gap job_order_deleted/staff_removed already

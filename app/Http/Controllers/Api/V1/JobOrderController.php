@@ -1280,7 +1280,7 @@ class JobOrderController extends Controller
     public function show(Request $request, Store $store, JobOrder $jobOrder): JsonResponse
     {
         if ($jobOrder->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This job order isn't part of your shop."], 403);
         }
 
         if ($denied = $this->branchAccessDenied($request, $jobOrder)) {
@@ -1293,7 +1293,7 @@ class JobOrderController extends Controller
         // RBAC: Staff/Tailors can only access orders assigned to them
         if (! $isOwnerOrManager && $user->hasRole('staff')) {
             if ((int) $jobOrder->assigned_staff_id !== (int) $user->id && (int) $jobOrder->assigned_to !== (int) $user->id) {
-                return response()->json(['success' => false, 'message' => 'Unauthorized. You are only allowed to access orders assigned to you.'], 403);
+                return response()->json(['success' => false, 'message' => 'You can only open job orders assigned to you.'], 403);
             }
         }
 
@@ -1336,7 +1336,7 @@ class JobOrderController extends Controller
     public function update(UpdateJobOrderRequest $request, Store $store, JobOrder $jobOrder): JsonResponse
     {
         if ($jobOrder->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This job order isn't part of your shop."], 403);
         }
 
         if ($denied = $this->branchAccessDenied($request, $jobOrder)) {
@@ -1349,7 +1349,7 @@ class JobOrderController extends Controller
         // RBAC: Staff/Tailors can only edit jobs assigned to them
         if (! $isOwnerOrManager && $user->hasRole('staff')) {
             if ((int) $jobOrder->assigned_staff_id !== (int) $user->id && (int) $jobOrder->assigned_to !== (int) $user->id) {
-                return response()->json(['success' => false, 'message' => 'Unauthorized. You can only update jobs assigned to you.'], 403);
+                return response()->json(['success' => false, 'message' => 'You can only update job orders assigned to you.'], 403);
             }
         }
 

@@ -340,6 +340,13 @@ class CatalogController extends Controller
             return $item;
         });
 
+        // Road km (HeiGIT) to the shop's nearest live branch, same as the shop list.
+        if ($distanceSql) {
+            \App\Services\RoadDistance::applyToRows($items->getCollection(), $request->float('lat'), $request->float('lng'),
+                fn ($item) => $item->store?->branches, null,
+                $request->string('sort_by')->toString() === 'distance');
+        }
+
         return response()->json([
             'success' => true,
             'data' => $items->items(),
@@ -579,7 +586,7 @@ class CatalogController extends Controller
     public function update(Request $request, Store $store, CatalogItem $catalog): JsonResponse
     {
         if ($catalog->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This design isn't part of your shop."], 403);
         }
 
         $garmentTypeRule = (
@@ -704,7 +711,7 @@ class CatalogController extends Controller
     public function destroy(Request $request, Store $store, CatalogItem $catalog): JsonResponse
     {
         if ($catalog->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This design isn't part of your shop."], 403);
         }
 
         // Same accountability gap job_order_deleted/staff_removed/

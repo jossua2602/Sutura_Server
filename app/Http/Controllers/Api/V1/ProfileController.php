@@ -133,7 +133,7 @@ class ProfileController extends Controller
         $user = $request->user();
 
         if (! $user->hasRole('staff') || ! $user->staffProfile) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json(['message' => "Only staff accounts can do this."], 403);
         }
 
         $validated = $request->validate([

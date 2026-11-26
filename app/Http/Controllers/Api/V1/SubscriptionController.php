@@ -38,7 +38,7 @@ class SubscriptionController extends Controller
         $isAdmin = $user->hasRole('admin');
 
         if (! $isOwner && ! $isStaff && ! $isAdmin) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized access to store subscriptions.'], 403);
+            return response()->json(['success' => false, 'message' => "You don't have access to this shop's plan."], 403);
         }
 
         // scheduledPlan: a downgrade waiting for this period to end (Billing shows it).
@@ -75,7 +75,7 @@ class SubscriptionController extends Controller
 
         $user = $request->user();
         if (! $user->stores()->where('id', $storeId)->exists() && ! $user->hasRole('admin')) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "Only the shop owner can do this."], 403);
         }
 
         $plan = SubscriptionPlan::findOrFail($request->plan_id);

@@ -55,8 +55,12 @@ return Application::configure(basePath: dirname(__DIR__))
                 return null;
             }
 
+            // Signed out or token expired: Laravel's own text is "Unauthenticated."
+            if ($e instanceof AuthenticationException) {
+                return response()->json(['success' => false, 'message' => 'Please sign in again.'], 401);
+            }
+
             if ($e instanceof ValidationException
-                || $e instanceof AuthenticationException
                 || $e instanceof AuthorizationException) {
                 return null;
             }
@@ -79,6 +83,12 @@ return Application::configure(basePath: dirname(__DIR__))
             // (404 / 405 / 5xx stay generic so route names and internals never leak.)
             if ($e instanceof HttpExceptionInterface && in_array($status, [400, 401, 403, 409, 422, 429], true) && trim($e->getMessage()) !== '') {
                 $message = $e->getMessage();
+            }
+
+            // A FormRequest's authorize() failing arrives here as a 403 with
+            // Laravel's default wording; say it plainly instead.
+            if ($status === 403 && $message === 'This action is unauthorized.') {
+                $message = "You don't have permission to do this.";
             }
 
             return response()->json(['success' => false, 'message' => $message], $status);

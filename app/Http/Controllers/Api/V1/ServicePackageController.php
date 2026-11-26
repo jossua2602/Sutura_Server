@@ -117,7 +117,7 @@ class ServicePackageController extends Controller
     public function update(Request $request, Store $store, ServicePackage $servicePackage): JsonResponse
     {
         if ($servicePackage->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This package isn't part of your shop."], 403);
         }
 
         $validated = $this->validatePackage($request, $store);
@@ -146,7 +146,7 @@ class ServicePackageController extends Controller
     public function destroy(Store $store, ServicePackage $servicePackage): JsonResponse
     {
         if ($servicePackage->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This package isn't part of your shop."], 403);
         }
 
         $servicePackage->delete();

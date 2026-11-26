@@ -36,7 +36,7 @@ class SubscriptionUpgradeRequestController extends Controller
     public function index(Request $request, Store $store): JsonResponse
     {
         if (! $this->ownsStore($request, $store)) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "Only the shop owner can do this."], 403);
         }
 
         return response()->json([
@@ -82,7 +82,7 @@ class SubscriptionUpgradeRequestController extends Controller
     public function store(Request $request, Store $store): JsonResponse
     {
         if (! $this->ownsStore($request, $store)) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "Only the shop owner can do this."], 403);
         }
 
         $validated = $request->validate([
@@ -197,7 +197,7 @@ class SubscriptionUpgradeRequestController extends Controller
     public function payOnline(Request $request, Store $store): JsonResponse
     {
         if (! $this->ownsStore($request, $store)) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "Only the shop owner can do this."], 403);
         }
         $validated = $request->validate([
             'plan_id' => ['required', 'integer', 'exists:subscription_plans,id'],
@@ -270,7 +270,7 @@ class SubscriptionUpgradeRequestController extends Controller
     public function checkOnline(Request $request, Store $store, SubscriptionUpgradeRequest $upgradeRequest): JsonResponse
     {
         if (! $this->ownsStore($request, $store) || $upgradeRequest->store_id !== $store->id || ! $upgradeRequest->isOnline()) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "Only the shop owner can do this."], 403);
         }
         try {
             $payment = OnlinePlanPayments::sync($upgradeRequest);
@@ -300,7 +300,7 @@ class SubscriptionUpgradeRequestController extends Controller
     public function cancelScheduled(Request $request, Store $store): JsonResponse
     {
         if (! $this->ownsStore($request, $store)) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "Only the shop owner can do this."], 403);
         }
         $current = SubscriptionSwitcher::current($store);
         if (! $current?->scheduled_plan_id) {
@@ -318,7 +318,7 @@ class SubscriptionUpgradeRequestController extends Controller
     public function receipt(Request $request, Store $store, SubscriptionUpgradeRequest $upgradeRequest): Response
     {
         if (! $this->ownsStore($request, $store) || $upgradeRequest->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized.'], 403);
+            return response()->json(['success' => false, 'message' => "Only the shop owner can do this."], 403);
         }
 
         if (! Storage::disk(self::privateDisk())->exists($upgradeRequest->payment_receipt_path)) {

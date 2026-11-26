@@ -20,7 +20,7 @@ class CustomerController extends Controller
     public function index(Request $request, Store $store): JsonResponse
     {
         if (! $request->user()->hasRole('store_owner') && ! $request->user()->hasRole('branch_manager') && ! $request->user()->hasRole('staff')) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json(['message' => "Only shop accounts can do this."], 403);
         }
 
         // A branch (picked by the owner, or the one a manager/staff account is
@@ -125,7 +125,7 @@ class CustomerController extends Controller
     public function show(Request $request, Store $store, User $customer): JsonResponse
     {
         if (! $request->user()->hasRole('store_owner') && ! $request->user()->hasRole('branch_manager') && ! $request->user()->hasRole('staff')) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json(['message' => "Only shop accounts can do this."], 403);
         }
 
         // Verify customer belongs to store
@@ -187,7 +187,7 @@ class CustomerController extends Controller
     public function measurements(Request $request, Store $store, User $customer): JsonResponse
     {
         if (! $request->user()->hasRole('store_owner') && ! $request->user()->hasRole('branch_manager') && ! $request->user()->hasRole('staff')) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json(['message' => "Only shop accounts can do this."], 403);
         }
 
         \App\Support\JobMeasurementSync::syncForCustomer($store, $customer->id);
@@ -228,7 +228,7 @@ class CustomerController extends Controller
     public function store(Request $request, Store $store): JsonResponse
     {
         if (! $request->user()->hasRole('store_owner') && ! $request->user()->hasRole('branch_manager') && ! $request->user()->hasRole('staff')) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json(['message' => "Only shop accounts can do this."], 403);
         }
 
         $validated = $request->validate([
@@ -330,7 +330,7 @@ class CustomerController extends Controller
     public function update(Request $request, Store $store, User $customer): JsonResponse
     {
         if (! $request->user()->hasRole('store_owner') && ! $request->user()->hasRole('branch_manager') && ! $request->user()->hasRole('staff')) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json(['message' => "Only shop accounts can do this."], 403);
         }
 
         // Verify customer belongs to store
@@ -427,7 +427,7 @@ class CustomerController extends Controller
     public function destroy(Request $request, Store $store, User $customer): JsonResponse
     {
         if (! $request->user()->hasRole('store_owner') && ! $request->user()->hasRole('branch_manager') && ! $request->user()->hasRole('staff')) {
-            return response()->json(['message' => 'Unauthorized'], 403);
+            return response()->json(['message' => "Only shop accounts can do this."], 403);
         }
 
         // Verify customer belongs to store — mirrors update()'s check exactly.

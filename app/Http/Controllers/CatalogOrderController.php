@@ -27,7 +27,7 @@ class CatalogOrderController extends Controller
         $isStaff = $user->staffProfile && $user->staffProfile->store_id === $store->id;
 
         if (! $isOwner && ! $isStaff) {
-            abort(403, 'Unauthorized: You do not have access to this store.');
+            abort(403, "You don't have access to this shop.");
         }
 
         return $store;

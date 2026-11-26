@@ -22,7 +22,7 @@ class CheckRole
         if (! $user || ! $user->roles()->whereIn('name', $roles)->exists()) {
             return response()->json([
                 'success' => false,
-                'message' => 'Unauthorized. Insufficient permissions.',
+                'message' => "Your account doesn't have access to this.",
             ], 403);
         }
 
@@ -58,7 +58,7 @@ class CheckRole
             if (! $store) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Store not found.',
+                    'message' => 'Shop not found.',
                 ], 404);
             }
 
@@ -69,7 +69,7 @@ class CheckRole
             if (! $belongsToStore) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'Unauthorized. You do not belong to this store.',
+                    'message' => "You don't have access to this shop.",
                 ], 403);
             }
 

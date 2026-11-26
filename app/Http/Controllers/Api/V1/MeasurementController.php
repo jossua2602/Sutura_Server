@@ -69,7 +69,7 @@ class MeasurementController extends Controller
     public function show(Store $store, Measurement $measurement): JsonResponse
     {
         if ($measurement->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This measurement isn't part of your shop."], 403);
         }
 
         return response()->json([
@@ -81,7 +81,7 @@ class MeasurementController extends Controller
     public function update(Request $request, Store $store, Measurement $measurement): JsonResponse
     {
         if ($measurement->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This measurement isn't part of your shop."], 403);
         }
 
         // A superseded (past) version is a read-only historical record — you
@@ -133,7 +133,7 @@ class MeasurementController extends Controller
     public function destroy(Store $store, Measurement $measurement): JsonResponse
     {
         if ($measurement->store_id !== $store->id) {
-            return response()->json(['success' => false, 'message' => 'Unauthorized'], 403);
+            return response()->json(['success' => false, 'message' => "This measurement isn't part of your shop."], 403);
         }
 
         // Deleting a profile removes its whole version history, not just the

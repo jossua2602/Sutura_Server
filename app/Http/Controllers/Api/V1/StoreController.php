@@ -62,7 +62,7 @@ class StoreController extends Controller
         if ($request->user()->id !== $store->owner_id) {
             return response()->json([
                 'success' => false,
-                'message' => 'You do not have access to this store.',
+                'message' => "You don't have access to this shop.",
             ], 403);
         }
 
@@ -515,6 +515,17 @@ class StoreController extends Controller
             return $store;
         });
 
+        if ($request->filled('lat') && $request->filled('lng')) {
+            // The map page shows every branch as a card: road km per branch (?branch_km=1).
+            if ($request->boolean('branch_km')) {
+                \App\Services\RoadDistance::applyToBranches($stores->getCollection()->flatMap(fn ($s) => $s->branches ?? []),
+                    $request->float('lat'), $request->float('lng'));
+            }
+            \App\Services\RoadDistance::applyToRows($stores->getCollection(), $request->float('lat'), $request->float('lng'), fn ($s) => $s->branches,
+                $request->filled('district') ? $request->string('district')->toString() : null,
+                in_array($sortBy, ['', 'distance'], true));
+        }
+
         return response()->json([
             'success' => true,
             'data' => $stores->items(),
@@ -611,7 +622,7 @@ class StoreController extends Controller
         if ($request->user()->id !== $store->owner_id) {
             return response()->json([
                 'success' => false,
-                'message' => 'You do not have access to this store.',
+                'message' => "You don't have access to this shop.",
             ], 403);
         }
 

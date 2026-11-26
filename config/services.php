@@ -44,6 +44,12 @@ return [
         'base_url' => env('XENDIT_BASE_URL', 'https://api.xendit.co'),
     ],
 
+    // HeiGIT openrouteservice: road km on shop cards (App\Services\RoadDistance).
+    // Without a key the cards keep the straight-line distance.
+    'openrouteservice' => [
+        'key' => env('ORS_API_KEY'),
+    ],
+
     'slack' => [
         'notifications' => [
             'bot_user_oauth_token' => env('SLACK_BOT_USER_OAUTH_TOKEN'),

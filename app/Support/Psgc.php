@@ -21,12 +21,24 @@ class Psgc
     /** Davao City districts used by the customer district filter. */
     public const DAVAO_DISTRICTS = ['Poblacion', 'Talomo', 'Buhangin', 'Agdao', 'Toril', 'Bunawan', 'Calinan', 'Tugbok'];
 
+    /**
+     * SUTURA serves Davao shops only, so the province picker offers the Davao
+     * Region (Region XI) provinces: Davao del Norte, del Sur, Oriental, de Oro
+     * and Occidental. PSGC codes in that region all start with "11".
+     */
+    public const DAVAO_REGION_PREFIX = '11';
+
     private const CACHE_SECONDS = 86400;
 
     /** @return array<int, array{code: string, name: string}> */
     public static function provinces(): array
     {
-        return self::list('province', null);
+        return array_values(array_filter(self::list('province', null), fn ($p) => self::inDavaoRegion($p['code'])));
+    }
+
+    public static function inDavaoRegion(?string $code): bool
+    {
+        return $code !== null && str_starts_with($code, self::DAVAO_REGION_PREFIX);
     }
 
     public static function cities(string $provinceCode): array
@@ -78,7 +90,7 @@ class Psgc
             ->when($parent !== null, fn ($q) => $q->where('parent_code', $parent))
             ->value('name') : null;
 
-        $names['province'] = $find('province', $province, null);
+        $names['province'] = self::inDavaoRegion($province) ? $find('province', $province, null) : null;
         if (! $names['province']) {
             $errors['province_code'] = 'Choose your province from the list.';
 
