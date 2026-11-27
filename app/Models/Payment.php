@@ -22,8 +22,6 @@ class Payment extends Model
         'rejected_by',
         'verified_at',
         'verified_by',
-        'cash_tendered',
-        'change_amount',
     ];
 
     protected $casts = [

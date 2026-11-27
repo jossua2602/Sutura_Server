@@ -456,6 +456,9 @@ class JobOrderController extends Controller
         // custom_order_data keys so the shop reads both kinds of order alike.
         $validated = $request->validate([
             'service_id' => 'required|integer',
+            // A combo package ordered as one set: service_id is one of its services
+            // (its questions and sizing are used); the price is the bundle price.
+            'service_package_id' => 'nullable|integer',
             // A PH mobile number: 11 digits starting with 09.
             'contact_phone' => ['required', 'string', 'regex:/^09\d{9}$/'],
             'store_branch_id' => 'nullable|integer',
@@ -548,6 +551,18 @@ class JobOrderController extends Controller
             return response()->json(['success' => false, 'message' => 'This service is not available to order right now.'], 404);
         }
 
+        $package = null;
+        if (! empty($validated['service_package_id'])) {
+            $package = \App\Models\ServicePackage::where('id', $validated['service_package_id'])
+                ->where('store_id', $store->id)
+                ->where('is_active', true)
+                ->with('services')
+                ->first();
+            if (! $package || ! $package->services->contains('id', $service->id)) {
+                return response()->json(['success' => false, 'message' => 'This package is not available to order right now.'], 404);
+            }
+        }
+
         // Bulk sizes are the service's own size-chart sizes when it has a chart, else XS–3XL.
         $chartSizes = collect($service->size_chart_rows ?? [])
             ->map(fn ($row) => trim((string) ($row['size'] ?? '')))
@@ -638,7 +653,9 @@ class JobOrderController extends Controller
 
         // A service with several pricing lines needs one picked; a single line is implied.
         $pricing = null;
-        if (! empty($validated['pricing_id'])) {
+        if ($package) {
+            // A package has one bundle price; its services' own price options don't apply.
+        } elseif (! empty($validated['pricing_id'])) {
             $pricing = $service->pricing->firstWhere('id', (int) $validated['pricing_id']);
             if (! $pricing) {
                 return response()->json(['success' => false, 'message' => 'That option is no longer offered. Please pick another.'], 422);
@@ -699,10 +716,13 @@ class JobOrderController extends Controller
         }
 
         // A running discount (Services → Discount) takes the same % off a tier as off the base price.
-        $unitPrice = $pricing && $pricing->amount !== null ? $service->discountedAmount((float) $pricing->amount) : $service->effectivePrice();
+        $unitPrice = $package
+            // The bundle price, or what its services add up to when the shop left it blank.
+            ? (float) ($package->bundle_price ?? $package->services->sum(fn ($s) => (float) $s->effectivePrice()))
+            : ($pricing && $pricing->amount !== null ? $service->discountedAmount((float) $pricing->amount) : $service->effectivePrice());
         // Own fabric: the service's per-piece deduction comes off the price up front (never below ₱0),
         // so the total and the deposit the customer pays are both on the lower price.
-        $fabricEach = $validated['material_source'] === 'customer_supplied'
+        $fabricEach = ! $package && $validated['material_source'] === 'customer_supplied'
             ? min((float) ($service->own_fabric_deduction ?? 0), $unitPrice)
             : 0.0;
         $fabricDeduction = round($fabricEach * $quantity, 2);
@@ -730,7 +750,8 @@ class JobOrderController extends Controller
         ], fn ($v) => $v !== null && $v !== '');
 
         // What the chosen payment term asks for now: everything, or the service's deposit share.
-        $requirements = \App\Support\OrderRequirements::resolve($store, [$service]);
+        // A combo uses its own requirements, else the shop's (same rule as job creation).
+        $requirements = \App\Support\OrderRequirements::resolve($store, $package ? [$package] : [$service]);
         $amountDue = $validated['payment_term'] === 'full'
             ? $totalAmount
             : round($totalAmount * \App\Support\OrderRequirements::depositFraction($requirements['payment_policy'], $requirements['payment_policy_percent']), 2);
@@ -772,7 +793,7 @@ class JobOrderController extends Controller
         }
 
         $orderNumber = $this->generateOrderNumber($store);
-        $jobOrder = DB::transaction(function () use ($store, $orderNumber, $branch, $customerId, $service, $measurementId, $quantity, $validated, $totalAmount, $sheets, $customOrderData, $gcash, $amountDue, $request) {
+        $jobOrder = DB::transaction(function () use ($store, $orderNumber, $branch, $customerId, $service, $package, $measurementId, $quantity, $validated, $totalAmount, $sheets, $customOrderData, $gcash, $amountDue, $request) {
             $jobOrder = $store->jobOrders()->create([
             'order_number' => $orderNumber,
             'tracking_code' => $this->generateTrackingCode($store, $orderNumber),
@@ -780,6 +801,8 @@ class JobOrderController extends Controller
             'store_branch_id' => $branch?->id,
             'customer_id' => $customerId,
             'service_id' => $service->id,
+            // One job order for the whole set.
+            'service_package_id' => $package?->id,
             'measurement_id' => $measurementId,
             // Only an individual order is measured per person; a bulk batch is counted by size.
             'measurement_source' => $validated['order_mode'] === 'individual' ? ($validated['measurement_source'] ?? null) : null,
@@ -1064,7 +1087,7 @@ class JobOrderController extends Controller
                 $validated['store_branch_id'] = $staffBranch;
             }
             $validated['balance'] = $validated['total_amount'];
-            unset($validated['discount_amount'], $validated['payment_method'], $validated['cash_tendered']);
+            unset($validated['discount_amount'], $validated['payment_method']);
         }
 
         $validated['order_number'] = $this->generateOrderNumber($store);
@@ -1116,15 +1139,7 @@ class JobOrderController extends Controller
         $balance = (float) $validated['balance'];
         $initialPayment = $totalAmount - $balance;
 
-        // Cash the customer handed over for that first payment. Empty means the exact amount.
         $creationMethod = $validated['payment_method'] ?? 'cash';
-        $cashTendered = isset($validated['cash_tendered']) && $creationMethod === 'cash' && $initialPayment > 0
-            ? round((float) $validated['cash_tendered'], 2)
-            : null;
-        unset($validated['cash_tendered']);
-        if ($cashTendered !== null && $cashTendered < round($initialPayment, 2)) {
-            return response()->json(['message' => "Cash tendered can't be less than the amount being paid."], 422);
-        }
 
         if ($balance <= 0) {
             $validated['payment_status'] = 'paid';
@@ -1246,8 +1261,6 @@ class JobOrderController extends Controller
             $jobOrder->payments()->create([
                 'amount' => $initialPayment,
                 'payment_method' => $creationMethod,
-                'cash_tendered' => $cashTendered,
-                'change_amount' => $cashTendered !== null ? round($cashTendered - $initialPayment, 2) : null,
                 'source' => 'walk_in',
                 'type' => $balance <= 0 ? 'full' : 'deposit',
                 'recorded_by' => $request->user()->id,
@@ -1357,6 +1370,15 @@ class JobOrderController extends Controller
         $oldAssignedStaffId = $jobOrder->assigned_staff_id ?? $jobOrder->assigned_to;
         $validated = $request->validated();
         $newStatus = $validated['status'] ?? null;
+
+        // A completed order is finished: its stage can't move again (from the
+        // job page or the board). Notes and other fields can still be saved.
+        if ($oldStatus === 'completed' && $newStatus !== null && $newStatus !== 'completed') {
+            return response()->json([
+                'success' => false,
+                'message' => "This order is already completed, so its stage can't be changed.",
+            ], 422);
+        }
 
         // Staff members are prohibited from reassigning jobs
         if (! $isOwnerOrManager && $user->hasRole('staff')) {
@@ -1752,24 +1774,10 @@ class JobOrderController extends Controller
             // (see the pending-verification handling below). Cash needs no
             // proof: the money is physically in hand at the counter.
             'receipt_path' => [\Illuminate\Validation\Rule::requiredIf(fn () => $request->input('payment_method', 'cash') !== 'cash'), 'nullable', 'string', 'max:2048'],
-            'cash_tendered' => [\Illuminate\Validation\Rule::requiredIf(fn () => $request->input('payment_method', 'cash') === 'cash'), 'nullable', 'numeric', 'min:0'],
         ]);
 
         $paymentMethod = $validated['payment_method'] ?? 'cash';
         $paymentAmount = (float) $validated['amount'];
-
-        $cashTendered = null;
-        $changeAmount = null;
-        if ($paymentMethod === 'cash') {
-            $cashTendered = (float) $validated['cash_tendered'];
-            if ($cashTendered < $paymentAmount) {
-                return response()->json([
-                    'success' => false,
-                    'message' => 'Cash tendered cannot be less than the amount being paid.',
-                ], 422);
-            }
-            $changeAmount = round($cashTendered - $paymentAmount, 2);
-        }
 
         // A GCash/bank reference number reused across two different orders
         // is exactly what a reused-screenshot scam looks like — the same
@@ -1797,8 +1805,23 @@ class JobOrderController extends Controller
             // Lock the row for the duration of the transaction so two payments
             // submitted at nearly the same time (e.g. two staff on the same job)
             // can't both read the same starting balance and overpay/double-count.
-            DB::transaction(function () use ($jobOrder, $paymentAmount, $paymentMethod, $isCash, $cashTendered, $changeAmount, $validated, $request) {
+            DB::transaction(function () use ($jobOrder, $paymentAmount, $paymentMethod, $isCash, $validated, $request) {
                 $locked = JobOrder::where('id', $jobOrder->id)->lockForUpdate()->firstOrFail();
+
+                // GCash/Maya payments still waiting for verification count against
+                // what's left (same rule as the customer's own "send payment"),
+                // or two waiting payments can add up to more than is owed and the
+                // second one could never be verified.
+                $pending = (float) $locked->payments()->whereNull('verified_at')->whereNull('rejected_at')->sum('amount');
+                $outstanding = round((float) $locked->balance - $pending, 2);
+                if ($paymentAmount > $outstanding + 0.005) {
+                    $peso = fn (float $v) => '₱'.number_format($v, 2);
+                    throw new \RuntimeException($pending > 0
+                        ? ($outstanding <= 0
+                            ? 'Nothing left to collect: '.$peso($pending).' is still waiting for verification. Verify or reject it first.'
+                            : $peso($pending).' is still waiting for verification, so only '.$peso($outstanding).' is left to collect.')
+                        : 'That is more than the remaining balance ('.$peso((float) $locked->balance).').');
+                }
 
                 // Cash is verified on the spot — the money is already in the
                 // till, so it applies to the balance immediately, same as
@@ -1808,21 +1831,11 @@ class JobOrderController extends Controller
                 // manager calls verifyPayment() below.
                 if ($isCash) {
                     $currentBalance = (float) $locked->balance;
-                    if ($paymentAmount > $currentBalance) {
-                        throw new \RuntimeException('Payment exceeds remaining balance');
-                    }
-
                     $newBalance = round($currentBalance - $paymentAmount, 2);
                     $locked->update([
                         'balance' => $newBalance,
                         'payment_status' => $newBalance <= 0 ? 'paid' : 'partial',
                     ]);
-                } else {
-                    // Still has to fit under the current balance so a customer
-                    // can't "pay" more than what's owed even before verification.
-                    if ($paymentAmount > (float) $locked->balance) {
-                        throw new \RuntimeException('Payment exceeds remaining balance');
-                    }
                 }
 
                 $locked->payments()->create([
@@ -1835,8 +1848,6 @@ class JobOrderController extends Controller
                     'recorded_by' => $request->user()->id,
                     'notes' => $validated['notes'] ?? null,
                     'receipt_path' => $validated['receipt_path'] ?? null,
-                    'cash_tendered' => $cashTendered,
-                    'change_amount' => $changeAmount,
                     'verified_at' => $isCash ? now() : null,
                     'verified_by' => $isCash ? $request->user()->id : null,
                 ]);
@@ -2393,6 +2404,10 @@ class JobOrderController extends Controller
 
         if ($denied = $this->branchAccessDenied($request, $jobOrder)) {
             return $denied;
+        }
+
+        if ($jobOrder->status === 'completed') {
+            return response()->json(['success' => false, 'message' => 'This order is already completed, so progress photos are closed.'], 422);
         }
 
         $validated = $request->validate([

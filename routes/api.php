@@ -143,6 +143,8 @@ Route::prefix('v1')->group(function () {
 
     Route::middleware(['auth:sanctum', 'throttle:authed'])->group(function () {
         Route::post('/auth/logout', [AuthController::class, 'logout']);
+        // A tab opened from a signed-in tab gets its own token (lib/tabSession.ts), so sign-outs stay per tab.
+        Route::post('/auth/tab-token', [AuthController::class, 'tabToken'])->middleware('throttle:20,1,tab-token');
         Route::get('/auth/me', [AuthController::class, 'me']);
 
         // System News — real commit history from both repos, not a
@@ -475,6 +477,10 @@ Route::prefix('v1')->group(function () {
 
             // Owner Only Access
             Route::middleware('role:store_owner')->group(function () {
+                // Welcome Guide: setup checklist + "seen" kept on the shop (StoreSetupController)
+                Route::get('/setup-progress', [\App\Http\Controllers\Api\V1\StoreSetupController::class, 'progress']);
+                Route::post('/welcome-seen', [\App\Http\Controllers\Api\V1\StoreSetupController::class, 'markWelcomeSeen']);
+
                 // Temporary Special Hours & Announcements
                 Route::get('/special-hours', [StoreSpecialHourController::class, 'index']);
                 Route::post('/special-hours', [StoreSpecialHourController::class, 'store']);
@@ -525,6 +531,7 @@ Route::prefix('v1')->group(function () {
             // store_owner,branch_manager group below instead.
             Route::post('/stores/{store}/branches', [StoreBranchController::class, 'store']);
             Route::put('/stores/{store}/branches/{branch}/set-main', [StoreBranchController::class, 'setMain']);
+            Route::put('/stores/{store}/branches/{branch}/visibility', [StoreBranchController::class, 'setVisibility']);
             Route::delete('/stores/{store}/branches/{branch}', [StoreBranchController::class, 'destroy']);
 
             // Subscription Plan Billing
@@ -606,6 +613,7 @@ Route::prefix('v1')->group(function () {
 
             Route::get('/stores', [AdminStoreController::class, 'index']);
             Route::get('/stores/map', [AdminStoreController::class, 'map']);
+            Route::get('/stores/{store}', [AdminStoreController::class, 'show']); // details pop-up on Shops
             Route::put('/stores/{store}/approve', [AdminStoreController::class, 'approve']);
             Route::put('/stores/{store}/reject', [AdminStoreController::class, 'reject']);
 

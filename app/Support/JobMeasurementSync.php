@@ -36,6 +36,15 @@ class JobMeasurementSync
             return null;
         }
 
+        // A profile also keeps its unit and what it was made for. Those aren't
+        // measurements, so they never count as a change; a new version keeps them.
+        // `==` (not `===`): the same values in another order are not a change either.
+        $unit = ($individual['unit'] ?? null) === 'cm' ? 'cm' : 'in';
+        $sameAs = fn (Measurement $m) => array_diff_key($m->metrics ?? [], ['unit' => 1, 'garment' => 1]) == $metrics
+            && ($m->photo_urls ?? []) == $sheets;
+        $withExtras = fn (?Measurement $m) => $metrics + ['unit' => $unit]
+            + (! empty($m?->metrics['garment']) ? ['garment' => $m->metrics['garment']] : []);
+
         $customerId = $jobOrder->customer_id;
         if (! $customerId) {
             return null;
@@ -55,7 +64,7 @@ class JobMeasurementSync
 
             if ($existing) {
                 // If metrics and sheets are identical, keep it as is
-                if ($existing->metrics === $metrics && $existing->photo_urls === $sheets) {
+                if ($sameAs($existing)) {
                     return $existing;
                 }
 
@@ -67,7 +76,7 @@ class JobMeasurementSync
                         'source' => 'store_owner',
                         'profile_name' => $existing->profile_name,
                         'version' => $existing->version + 1,
-                        'metrics' => $metrics,
+                        'metrics' => $withExtras($existing),
                         'photo_urls' => $sheets,
                         'notes' => 'Updated from Job Order ' . $jobOrder->order_number,
                         'status' => 'finalized',
@@ -86,7 +95,7 @@ class JobMeasurementSync
             ->first();
 
         if ($activeProfile) {
-            if ($activeProfile->metrics === $metrics && $activeProfile->photo_urls === $sheets) {
+            if ($sameAs($activeProfile)) {
                 if ($jobOrder->measurement_id !== $activeProfile->id) {
                     $jobOrder->update(['measurement_id' => $activeProfile->id]);
                 }
@@ -100,7 +109,7 @@ class JobMeasurementSync
                 'source' => 'store_owner',
                 'profile_name' => $profileName,
                 'version' => $activeProfile->version + 1,
-                'metrics' => $metrics,
+                'metrics' => $withExtras($activeProfile),
                 'photo_urls' => $sheets,
                 'notes' => 'Recorded from Job Order ' . $jobOrder->order_number,
                 'status' => 'finalized',
@@ -115,7 +124,7 @@ class JobMeasurementSync
             'source' => 'store_owner',
             'profile_name' => $profileName,
             'version' => 1,
-            'metrics' => $metrics,
+            'metrics' => $withExtras(null),
             'photo_urls' => $sheets,
             'notes' => 'Auto-recorded from Job Order ' . $jobOrder->order_number,
             'status' => 'finalized',

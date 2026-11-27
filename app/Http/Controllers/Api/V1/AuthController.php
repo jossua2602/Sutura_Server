@@ -228,6 +228,21 @@ class AuthController extends Controller
         ]);
     }
 
+    /**
+     * A new browser tab opened from a signed-in SUTURA tab ("Open link in new
+     * tab") borrows that tab's login (lib/tabSession.ts) and trades the copied
+     * token for one of its own here. Each tab then signs out on its own: logout
+     * deletes only that tab's token, never the tab it was opened from.
+     * Same user, same name and abilities (an admin token stays admin-only).
+     */
+    public function tabToken(Request $request): JsonResponse
+    {
+        $current = $request->user()->currentAccessToken();
+        $token = $request->user()->createToken($current->name ?? 'auth_token', $current->abilities ?? ['*'])->plainTextToken;
+
+        return response()->json(['success' => true, 'data' => ['token' => $token]]);
+    }
+
     public function logout(Request $request): JsonResponse
     {
         $request->user()->currentAccessToken()->delete();

@@ -38,11 +38,14 @@ class ServicePackageController extends Controller
             ->withCount('reviews')
             ->withAvg('reviews', 'rating')
             ->with('services:id,name,base_price')
-            ->get(['id', 'store_id', 'name', 'description', 'service_category', 'image_url', 'bundle_price'])
-            ->each(function (ServicePackage $package) {
+            ->get(['id', 'store_id', 'name', 'description', 'service_category', 'image_url', 'bundle_price',
+                'measurement_requirement', 'fitting_requirement', 'payment_policy', 'payment_policy_percent'])
+            ->each(function (ServicePackage $package) use ($store) {
                 $package->reviews_avg_rating = $package->reviews_avg_rating !== null
                     ? round((float) $package->reviews_avg_rating, 1)
                     : null;
+                // What ordering the set asks for (payment up front, fitting…), for the order form.
+                $package->order_requirements = \App\Support\OrderRequirements::resolve($store, [$package]);
             });
 
         return response()->json([

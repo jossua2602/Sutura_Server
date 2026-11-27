@@ -345,10 +345,53 @@ class StoreBranchController extends Controller
         return response()->json(['success' => true, 'message' => 'Branch updated successfully.', 'data' => $branch]);
     }
 
+    /**
+     * The owner's Hide / Show on a branch shop. Hidden = status 'inactive': off the
+     * map, search and online booking (StoreBranch::live()). Its staff, orders and
+     * appointments stay as they are. The main shop can't be hidden (that would take
+     * the whole shop offline; Home has its own shop visibility switch for that).
+     */
+    public function setVisibility(Request $request, $storeId, StoreBranch $branch)
+    {
+        if ($branch->store_id != $storeId) {
+            return response()->json(['success' => false, 'message' => "This branch isn't part of your shop."], 403);
+        }
+        $hidden = (bool) $request->validate(['hidden' => 'required|boolean'])['hidden'];
+
+        if ($hidden) {
+            if ($branch->is_main) {
+                return response()->json(['success' => false, 'message' => "The main shop can't be hidden. To take the whole shop off the map, turn off shop visibility on Home."], 422);
+            }
+            $branch->update(['status' => 'inactive']);
+        } elseif ($branch->status !== 'active') {
+            // Same rules as switching it back on from the edit form.
+            if ($branch->plan_locked_at) {
+                return response()->json(['success' => false, 'message' => 'This branch shop is locked by your plan. Use Unlock to choose which branch shops stay open.'], 422);
+            }
+            $plan = \App\Support\SubscriptionSwitcher::current(\App\Models\Store::find($storeId))?->plan;
+            $limit = $plan ? \App\Support\PlanLimits::limit($plan, 'branch') : 0;
+            $open = StoreBranch::where('store_id', $storeId)->where('is_main', false)->where('status', 'active')->count();
+            if ($limit !== -1 && $open >= $limit) {
+                return response()->json(['success' => false, 'message' => "Your plan allows {$limit} open branch shop".($limit === 1 ? '' : 's').'. Hide another one first.'], 422);
+            }
+            $branch->update(['status' => 'active']);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $hidden ? 'Branch hidden from customers.' : 'Branch is visible to customers again.',
+            'data' => $branch->fresh(),
+        ]);
+    }
+
     public function setMain(Request $request, $storeId, StoreBranch $branch)
     {
         if ($branch->store_id != $storeId) {
             return response()->json(['success' => false, 'message' => "This branch isn't part of your shop."], 403);
+        }
+        // A hidden branch can't become the main shop (the main shop is never hidden).
+        if ($branch->status !== 'active') {
+            return response()->json(['success' => false, 'message' => 'Show this branch first, then make it the main shop.'], 422);
         }
 
         // Reset all branches of this store to is_main = false

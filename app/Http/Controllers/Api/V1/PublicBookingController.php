@@ -147,17 +147,10 @@ class PublicBookingController extends Controller
             $validated['service_id'] = \App\Models\ServicePackage::find($validated['service_package_id'])?->services()->value('services.id');
         }
 
-        // ── Conditional service_id required ───────────────────────────────────
-        if (
-            in_array($type, Appointment::TYPES_REQUIRING_SERVICE)
-            && empty($validated['service_id'])
-        ) {
-            return response()->json([
-                'success' => false,
-                'message' => "A service must be selected for appointment type: {$type}.",
-                'errors' => ['service_id' => ["Service is required for {$type} appointments."]],
-            ], 422);
-        }
+        // No service needed for any type: the booking form no longer asks for one
+        // (a plain "Book Appointment" sends none). The shop sorts out the details
+        // at the visit; a service still comes through when the customer starts
+        // from a service, design or package.
 
         // ── Conditional receipt required for non-cash payments ────────────────
         // The frontend's file-input `required` attribute is satisfied the

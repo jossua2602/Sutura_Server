@@ -54,6 +54,7 @@ class Store extends Model
     // only Admin\ModerationController may set them, via forceFill().
     protected $casts = [
         'approved_at' => 'datetime',
+        'welcome_seen_at' => 'datetime',
         'admin_hidden_at' => 'datetime',
         'booking_questions' => 'array',
         'social_links' => 'array',

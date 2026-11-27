@@ -55,6 +55,63 @@ class StoreController extends Controller
     }
 
     /**
+     * One shop's details for the admin Shops page pop-up: profile, owner,
+     * plan, every branch (with its verification state), and activity counts.
+     * Bank / GCash account numbers are left out; the admin doesn't need them here.
+     */
+    public function show(Store $store): JsonResponse
+    {
+        $store->load([
+            'owner:id,name,email,phone,last_seen_at,created_at',
+            'approvedBy:id,name',
+            'subscription.plan:id,name,slug',
+            'branches' => fn ($q) => $q->orderByDesc('is_main')->orderBy('name')
+                ->select('id', 'store_id', 'name', 'address', 'barangay', 'district', 'city', 'contact_number', 'is_main', 'status', 'verification_status', 'latitude', 'longitude'),
+        ])->loadCount(['staff', 'services', 'catalogItems', 'jobOrders', 'appointments', 'customers', 'reviews'])
+            ->loadAvg('reviews', 'rating');
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'id' => $store->id,
+                'name' => $store->name,
+                'slug' => $store->slug,
+                'status' => $store->status,
+                'is_hidden' => (bool) $store->is_hidden,
+                'admin_hidden_at' => $store->admin_hidden_at,
+                'admin_hidden_reason' => $store->admin_hidden_reason,
+                'logo_path' => $store->logo_path,
+                'banner_path' => $store->banner_path,
+                'description' => $store->description,
+                'business_type' => $store->business_type,
+                'address' => $store->address,
+                'city' => $store->city,
+                'phone' => $store->phone,
+                'email' => $store->email,
+                'specializations' => $store->specializations ?? [],
+                'social_links' => $store->social_links ?? [],
+                'operating_hours' => $store->operating_hours,
+                'created_at' => $store->created_at,
+                'approved_at' => $store->approved_at,
+                'approved_by' => $store->approvedBy?->name,
+                'owner' => $store->owner,
+                'subscription' => $store->subscription,
+                'branches' => $store->branches,
+                'counts' => [
+                    'staff' => $store->staff_count,
+                    'services' => $store->services_count,
+                    'catalog_items' => $store->catalog_items_count,
+                    'job_orders' => $store->job_orders_count,
+                    'appointments' => $store->appointments_count,
+                    'customers' => $store->customers_count,
+                    'reviews' => $store->reviews_count,
+                ],
+                'rating' => $store->reviews_avg_rating !== null ? round((float) $store->reviews_avg_rating, 1) : null,
+            ],
+        ]);
+    }
+
+    /**
      * Pins for the admin Shops map: one per live branch (active + verified,
      * the same set the public /map shows) of every active shop (approved,
      * visible to customers), with the shop's current plan. A shop with no live

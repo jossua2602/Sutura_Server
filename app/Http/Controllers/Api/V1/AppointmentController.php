@@ -681,8 +681,13 @@ class AppointmentController extends Controller
             // 5-minute grace window either side of scheduled_at counts as
             // on_time so normal clock drift/rounding doesn't read as early
             // or late.
+            // The browser sends UTC ("…Z"); store it as Manila time like every other
+            // column here, or 3:07 AM is saved as 7:07 PM the day before.
+            if (! empty($data['checked_in_at'])) {
+                $data['checked_in_at'] = Carbon::parse($data['checked_in_at'])->setTimezone(config('app.timezone'));
+            }
             if (! $error && ! empty($data['checked_in_at']) && $appointment->scheduled_at) {
-                $checkedInAt = Carbon::parse($data['checked_in_at']);
+                $checkedInAt = $data['checked_in_at'];
                 $graceMinutes = 5;
                 if ($checkedInAt->lt($appointment->scheduled_at->copy()->subMinutes($graceMinutes))) {
                     $data['arrival_status'] = 'early';
@@ -698,20 +703,20 @@ class AppointmentController extends Controller
             // actually has capacity right now — an early customer can never
             // automatically displace another confirmed appointment (rule 11).
             // Capacity is checked the same way a normal booking would be:
-            // is there another active appointment already occupying this
-            // branch between "now" and this appointment's own scheduled
-            // start? If so, decline the shortcut here and let staff choose
-            // to keep the customer waiting instead.
+            // is the branch free from now for as long as this appointment
+            // takes? (Not "until the original time": a customer checked in
+            // days ahead would then clash with every booking in between.)
+            // If it isn't free, staff keep the customer waiting instead.
             if (! $error && ($data['early_arrival_decision'] ?? null) === 'accommodated') {
                 if (($appointment->arrival_status ?? null) !== 'early') {
                     $error = 'This appointment is not marked as an early arrival.';
                     $status = 422;
                 } else {
                     $now = Carbon::now();
-                    $minutesUntilScheduled = max(1, $now->diffInMinutes($appointment->scheduled_at, false));
+                    $serviceMinutes = (int) ($appointment->duration_minutes ?: 60);
 
-                    if (Appointment::hasSchedulingConflict($store, $appointment->store_branch_id, $now, (int) $minutesUntilScheduled, $appointment->id, false)) {
-                        $error = 'Another confirmed appointment currently occupies this branch — this customer cannot be accommodated early right now.';
+                    if (Appointment::hasSchedulingConflict($store, $appointment->store_branch_id, $now, $serviceMinutes, $appointment->id, false)) {
+                        $error = "This branch has another appointment in the next {$serviceMinutes} minutes, so this customer can't be taken early. Ask them to wait for their time.";
                         $status = 409;
                     } else {
                         $data['actual_service_start_at'] = $now;

@@ -69,11 +69,6 @@ class Appointment extends Model
     /** Valid early-arrival accommodation decisions. */
     public const EARLY_ARRIVAL_DECISIONS = ['waiting', 'accommodated', 'declined'];
 
-    /**
-     * Types that require a service_id to be set.
-     * "Pickup" must also have a linked order — handled at controller level.
-     */
-    public const TYPES_REQUIRING_SERVICE = ['measurement', 'alteration'];
 
     /**
      * Valid status transitions.

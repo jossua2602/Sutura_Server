@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\StoreBranch;
+use App\Support\NotificationPresenter;
 use Illuminate\Database\Eloquent\Relations\MorphMany;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -81,15 +82,8 @@ class NotificationController extends Controller
             $perPage = max(1, min(100, (int) $request->input('per_page', 20)));
             $paginated = $query->paginate($perPage);
 
-            $items = collect($paginated->items())->map(function ($n) {
-                return [
-                    'id' => $n->id,
-                    'type' => $n->type,
-                    'data' => is_string($n->data) ? json_decode($n->data, true) : $n->data,
-                    'read_at' => $n->read_at ? (is_string($n->read_at) ? $n->read_at : $n->read_at->toISOString()) : null,
-                    'created_at' => is_string($n->created_at) ? $n->created_at : $n->created_at?->toISOString(),
-                ];
-            })->values()->all();
+            // Adds who it's from (with their picture), a plain summary and the details to scan.
+            $items = NotificationPresenter::present($paginated->items());
 
             return response()->json([
                 'success' => true,
@@ -118,15 +112,7 @@ class NotificationController extends Controller
 
         $limit = max(1, min(50, (int) $request->input('limit', 30)));
         $rawList = $this->feed($request)->latest()->limit($limit)->get();
-        $items = $rawList->map(function ($n) {
-            return [
-                'id' => $n->id,
-                'type' => $n->type,
-                'data' => is_string($n->data) ? json_decode($n->data, true) : $n->data,
-                'read_at' => $n->read_at ? (is_string($n->read_at) ? $n->read_at : $n->read_at->toISOString()) : null,
-                'created_at' => is_string($n->created_at) ? $n->created_at : $n->created_at?->toISOString(),
-            ];
-        })->values()->all();
+        $items = NotificationPresenter::present($rawList);
 
         $payload = [
             'success' => true,

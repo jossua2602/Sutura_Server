@@ -83,7 +83,9 @@ class StoreApplication extends Model
     public const CHANGE_ITEMS = [
         'owner' => 'Owner details (name, birthday, contact)',
         'shop' => 'Shop details (name, address, map pin)',
-        'payment' => 'Payment receipt',
+        // No "Payment receipt": new shops pay with GCash online (Xendit), so there's no
+        // receipt to redo. requestedItems() skips unknown keys, so an older request that
+        // still lists 'payment' simply drops it instead of blocking the owner.
         'landmark' => 'Shop front photo',
         'dti' => 'DTI registration',
         'tin' => 'TIN / BIR 2303',

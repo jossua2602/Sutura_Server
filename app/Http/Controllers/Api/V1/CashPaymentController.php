@@ -103,8 +103,6 @@ class CashPaymentController extends Controller
             'customer' => $job?->customer?->name,
             'type' => $p->type,
             'amount' => (float) $p->amount,
-            'cash_tendered' => $p->cash_tendered !== null ? (float) $p->cash_tendered : null,
-            'change_amount' => $p->change_amount !== null ? (float) $p->change_amount : null,
             'received_by' => $p->recordedBy?->name,
             'branch' => $job?->branch?->name,
             'notes' => $p->notes,
@@ -175,15 +173,13 @@ class CashPaymentController extends Controller
         return response()->streamDownload(function () use ($query) {
             $out = fopen('php://output', 'w');
             fwrite($out, "\xEF\xBB\xBF"); // Excel reads ₱ / ñ correctly
-            fputcsv($out, ['Date', 'Time', 'Order no.', 'Customer', 'Payment', 'Amount (PHP)', 'Cash given', 'Change', 'Received by', 'Branch', 'Order status']);
+            fputcsv($out, ['Date', 'Time', 'Order no.', 'Customer', 'Payment', 'Amount (PHP)', 'Received by', 'Branch', 'Order status']);
             foreach ($query->cursor() as $p) {
                 $r = $this->present($p);
                 $at = $p->created_at;
                 fputcsv($out, [
                     $at?->format('Y-m-d'), $at?->format('H:i'), $r['order_number'], $r['customer'], ucfirst((string) $r['type']),
                     number_format($r['amount'], 2, '.', ''),
-                    $r['cash_tendered'] !== null ? number_format($r['cash_tendered'], 2, '.', '') : '',
-                    $r['change_amount'] !== null ? number_format($r['change_amount'], 2, '.', '') : '',
                     $r['received_by'], $r['branch'], $r['order_payment_status'],
                 ]);
             }

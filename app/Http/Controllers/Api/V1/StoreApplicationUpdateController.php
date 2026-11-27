@@ -150,8 +150,33 @@ class StoreApplicationUpdateController extends Controller
             }
         }
 
+        // Text fields are overwritten below, so note what each one was before:
+        // the admin sees "old → new" for every value that really changed
+        // (documents keep their old file in previous_documents instead).
+        $changes = [];
+        $track = function (string $section, string $label, $before, $after) use (&$changes) {
+            $b = trim((string) ($before ?? ''));
+            $a = trim((string) ($after ?? ''));
+            if ($b !== $a) {
+                $changes[] = ['section' => $section, 'label' => $label, 'before' => $b !== '' ? $b : null, 'after' => $a !== '' ? $a : null];
+            }
+        };
+        if (in_array('owner', $items, true)) {
+            $fullName = fn ($v) => trim(preg_replace('/\s+/', ' ', ($v['first_name'] ?? '').' '.($v['middle_name'] ?? '').' '.($v['last_name'] ?? '').' '.($v['suffix'] ?? '')));
+            $track('owner', 'Full name', $fullName($application->only(['first_name', 'middle_name', 'last_name', 'suffix'])), $fullName($validated));
+            $track('owner', 'Date of birth', $application->birthday?->toDateString(), $validated['birthday']);
+            $track('owner', 'Contact number', $application->contact_number, $validated['contact_number']);
+            $track('owner', 'Email', $application->user?->contact_email, $validated['email']);
+        }
+        if (in_array('shop', $items, true)) {
+            $pin = fn ($lat, $lng) => $lat !== null && $lng !== null ? sprintf('%.5f, %.5f', $lat, $lng) : null;
+            $track('shop', 'Shop name', $store->name, $validated['store_name']);
+            $track('shop', 'Address', $store->address, $location['address']);
+            $track('shop', 'Map pin', $pin($store->latitude, $store->longitude), $pin($validated['latitude'], $validated['longitude']));
+        }
+
         try {
-            DB::transaction(function () use ($application, $store, $items, $validated, $newPaths, $previous, $location) {
+            DB::transaction(function () use ($application, $store, $items, $validated, $newPaths, $previous, $location, $changes) {
                 $fields = $newPaths + ['previous_documents' => $previous ?: null];
 
                 if (in_array('owner', $items, true)) {
@@ -207,6 +232,8 @@ class StoreApplicationUpdateController extends Controller
                     'requested_at' => $application->change_requested_at?->toISOString(),
                     'requested_by' => $application->changeRequester?->name,
                     'resubmitted_at' => now()->toISOString(),
+                    // [{section, label, before, after}] for owner / shop text fields that changed.
+                    'changes' => $changes,
                 ];
 
                 $application->update($fields + [
