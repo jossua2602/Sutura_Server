@@ -35,8 +35,6 @@ class SubscriptionPlanSeeder extends Seeder
                     'Appointment Scheduling',
                     'Order Tracking',
                     'Measurement Recording',
-                    'Text-Only Profile',
-                    'Manual Updates (Web Portal)',
                     'Standard Search Listing',
                 ],
                 'is_active' => true,
@@ -50,7 +48,7 @@ class SubscriptionPlanSeeder extends Seeder
             ['slug' => 'pro'],
             [
                 'name' => 'Pro',
-                'description' => 'Grow faster with visibility tools, portfolio, and team management.',
+                'description' => 'Sales and staff reports, and text messages to your customers.',
                 'price_monthly' => 799.00,
                 'price_yearly' => 7990.00,
                 'max_staff' => 5,
@@ -58,16 +56,10 @@ class SubscriptionPlanSeeder extends Seeder
                 'max_services' => 50,
                 'max_appointments_per_month' => 200,
                 'features' => [
+                    // Only what the plan really unlocks (see 2026_11_28_120000_keep_only_real_plan_perks).
                     'All Basic Plan Features',
-                    'Boosted Search Visibility',
-                    'Visual Portfolio Gallery',
-                    'Direct Customer Inquiries',
-                    'Visual Dashboard & Analytics',
                     'Sales & Staff Reports',
-                    'SMS/Email Notifications',
-                    'Measurement History',
-                    'Multi-User Access',
-                    'Staff Management',
+                    'SMS Text Notifications',
                 ],
                 'is_active' => true,
             ]
@@ -80,7 +72,7 @@ class SubscriptionPlanSeeder extends Seeder
             ['slug' => 'premium'],
             [
                 'name' => 'Premium',
-                'description' => 'Top-tier visibility, custom branding, and advanced reporting for serious stores.',
+                'description' => 'Branch shops, top placement in the shop list, branch reports and exports.',
                 'price_monthly' => 1999.00,
                 'price_yearly' => 19990.00,
                 'max_staff' => -1, // Unlimited
@@ -90,7 +82,6 @@ class SubscriptionPlanSeeder extends Seeder
                 'features' => [
                     'All Pro Plan Features',
                     'Multi-Branch Management',
-                    'Custom Branding',
                     'Featured Store Visibility (Top Placement)',
                     'Branch Comparison Reports',
                     'Income & Receipt Exports',
